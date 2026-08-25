@@ -124,7 +124,13 @@ opposite policies:
 |---|---|---|
 | `0` | 2xx | uses the body |
 | `4` | no HTTP answer — dead exit node, failed handshake | retries, 3x with backoff |
+| `3` | the fetcher's own environment is wrong | fails; retrying never helps |
 | any other non-zero | answered, non-2xx | fails; retrying a 429 is what makes it worse |
+
+Only `4` is retried, and only because it costs nothing: a handshake that never
+completed transferred no bytes. Everything else is either an answer or a
+misconfiguration, and repeating it just spends more of whatever the fetcher
+spends.
 
 That is the entire contract, which is the point: **this repository ships no proxy
 code and no credentials, and cannot leak what it never holds.** Anything that
