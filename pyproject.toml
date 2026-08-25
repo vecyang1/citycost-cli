@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "citycost"
+version = "1.0.0"
+description = "City cost-of-living intelligence from free public sources — discover, verify, rank, and cross-check."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Vec Yang" }]
+keywords = ["cost-of-living", "numbeo", "nomad", "relocation", "cli", "agent"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Utilities",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vecyang1/citycost-cli"
+Issues = "https://github.com/vecyang1/citycost-cli/issues"
+
+[project.scripts]
+citycost = "citycost.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["citycost*"]

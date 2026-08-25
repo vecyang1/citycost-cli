@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Scraped output is Numbeo's data, not ours. Never commit it.
+*.scraped.json
+out/
+data/
+
+# Cloud-sync droppings. Found one staged for a public push on 2026-08-25 —
+# listing every file caught it; the file count alone would not have.
+*.baiduyun.uploading.cfg
+.baiduyun*
+*.sync-conflict-*
+._*
