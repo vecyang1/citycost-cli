@@ -13,8 +13,14 @@ citycost discover --max-cost 1200 --region Asia --min-internet 30 --verify
 citycost compare Da-Nang Hanoi Chiang-Mai --md --crosscheck
 citycost rank --index quality-of-life --top 15
 citycost trend Prague --snapshots 12
+citycost movers --from 2019 --to current --top 15
 citycost find Vietnam
 ```
+
+The full surface is `discover`, `compare`, `rank`, `movers`, `trend`,
+`snapshots`, `harvest`, `find`, `city`, `meetups`, `doctor` and `cache`; a test
+asserts that list against the parser's own registry, so a command cannot ship
+undocumented.
 
 ## Why this exists
 
@@ -36,6 +42,72 @@ actually shipped:
 | One "lower is better" rule for every column | The **worst**-paying city marked as having the best salary |
 | First-match city lookup | Vancouver-Washington and Vancouver-BC spliced into one 17-year "trend" |
 | Cache with no schema version | Entries written by an older version served with the new fields quietly missing |
+
+## `movers` — which cities moved, and the reason it can refuse
+
+`rank` reads one snapshot and `trend` reads one city. Neither answers the
+question the 17 years of history are actually for: **which cities moved most
+between two dates.**
+
+```bash
+citycost movers --from 2019 --to current --index cost-of-living --top 12
+citycost movers --from 2019 --index property --column "Gross Rental Yield City Centre"
+citycost movers --from 2014 --falling --order pct --csv > /dev/null
+```
+
+The join is over the cities present in **both** snapshots, and it says so on
+every run: 2019 carries 433 rows and `current` carries 558, of which 396 join.
+The other 199 are not movers — 162 are new and 37 were delisted — and both
+counts print unconditionally, because a symmetric explosion in them is the only
+observer for a join that has silently stopped matching.
+
+It refuses rather than answers when:
+
+| | |
+|---|---|
+| both snapshots return the **identical table**, and so does the oldest published one | `?title=` is being ignored upstream; every delta is 0 for a reason that has nothing to do with these cities — **exit 1** |
+| both are identical but the oldest differs | those two ids name one published table; pick two the source distinguishes — **exit 2** |
+| the column resolves to two different labels across the snapshots | it would be arithmetic on two unrelated series, rendered exactly like a number with a meaning — **exit 2** |
+| fewer than half the smaller table joins | the place-label format has probably changed upstream — **exit 1** |
+| nothing carries the column in both | "nothing was compared" is not "nothing moved" — **exit 1** |
+
+It renders **no** better/worse verdict and never marks a best value, which
+every other table in this tool does. A rent index rising is bad for a renter
+and good for a landlord; a salary index falling is bad; `Gross Rental Yield`
+has no single answer. This repo already shipped one "lower is better" rule that
+marked the worst-paying city as having the best salary.
+
+## `harvest` — take the archive once, keep it
+
+Historical snapshots do not change, so fetching them repeatedly is the whole
+waste. `harvest` prints a plan first and fetches nothing without `--execute`:
+
+```bash
+citycost harvest
+citycost harvest --index cost-of-living --execute
+```
+
+The plan partitions every target by what the cache can already answer, and the
+partition sums to the denominator — "you have 140 of 192" and "you have 192
+files, all written under the previous schema" cost 52 and 192 requests, and a
+boolean would make them the same sentence. `current` is excluded and the plan
+says so on its own line: it is the one URL in the family that legitimately
+moves.
+
+It aborts on the first refusal rather than grinding — the block is address
+level and does not slide — and it holds a lock, because `net`'s pacing is
+per-process and two harvests are two unpaced clients. There is no `--jobs`, no
+`--out`, and no `--source`: concurrency is what earned the seven-day ban, this
+fills a cache rather than producing a dataset, and the subject set is closed.
+
+## The rest of the surface
+
+```bash
+citycost snapshots --index property     # which snapshots exist, from the page's own <select>
+citycost city prague-czech-republic     # nomads.com detail for one slug
+citycost meetups --country Vietnam      # upcoming nomad meetups
+citycost cache                          # read-only report; --prune and --clear are named
+```
 
 ## What each source is for
 

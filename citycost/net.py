@@ -25,6 +25,9 @@ import zlib
 from pathlib import Path
 
 from . import fallback, render
+# Re-exported: `fmt_age` is a pure formatter and belongs with the other
+# formatters, but `net.fmt_age` is the name existing callers and tests use.
+from .render import fmt_age  # noqa: F401
 from .errors import SourceUnavailable
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -39,16 +42,6 @@ def cache_dir() -> Path:
     """Overridable so a test run can never touch the developer's real cache."""
     return Path(os.environ.get("CITYCOST_CACHE_DIR")
                 or Path.home() / ".cache" / "citycost")
-
-
-def fmt_age(seconds: int) -> str:
-    if seconds < 90:
-        return f"{seconds}s"
-    if seconds < 5400:
-        return f"{seconds // 60}m"
-    if seconds < 172800:
-        return f"{seconds / 3600:.1f}h"
-    return f"{seconds / 86400:.1f}d"
 
 
 def _decode(raw: bytes, content_type: str) -> str:

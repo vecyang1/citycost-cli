@@ -63,8 +63,12 @@ class TestParser(unittest.TestCase):
 
 
 def _min_args(cmd):
+    # `movers` needs --from because a reversed base is invisible in the
+    # output: `--from current --to 2019` inverts every sign and still renders a
+    # complete, plausible table. Requiring it is the guard.
     return {"compare": ["Prague"], "trend": ["Prague"], "find": ["Vietnam"],
-            "city": ["prague-czech-republic"]}.get(cmd, [])
+            "city": ["prague-czech-republic"],
+            "movers": ["--from", "2019"]}.get(cmd, [])
 
 
 class TestCompareOutput(unittest.TestCase):

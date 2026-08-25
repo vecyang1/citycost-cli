@@ -23,6 +23,9 @@ from .net import clear_cache, fmt_age, prune_cache
 # Re-exported, not redefined: `cli.build_parser` is the name every caller
 # and test already uses, and the parser itself lives in one module.
 from .parser import build_parser
+# Imported by NAME, not as a module: `cmd_*` must be attributes of `cli` for
+# the parser to resolve them and for the orphaned-command test to see them.
+from .panel import cmd_harvest, cmd_movers  # noqa: F401
 
 
 
@@ -74,7 +77,7 @@ def cmd_discover(args) -> int:
     if total is not None and returned is not None and total > returned:
         render.note(f"  showing {returned} of {total} matching cities "
                     f"(--limit up to {discover.MAX_LIMIT})")
-    _age_note(res.get("_age_s"), "nomads.com")
+    render.age_note(res.get("_age_s"), "nomads.com")
     if res.get("attribution"):
         render.note(f"  {res['attribution']}")
     return 0
@@ -90,7 +93,7 @@ def cmd_city(args) -> int:
     rows = [[k, "" if v is None else str(v)]
             for k, v in sorted(body.items()) if not k.startswith("_")]
     print(render.text_table(["Field", "Value"], rows, color=not args.no_color))
-    _age_note(data.get("_age_s"), "nomads.com")
+    render.age_note(data.get("_age_s"), "nomads.com")
     return 0
 
 
@@ -110,7 +113,7 @@ def cmd_meetups(args) -> int:
              str(m.get("going") or m.get("attendees") or "")] for m in items]
     print(render.text_table(["City", "Country", "When", "Going"], rows,
                             color=not args.no_color))
-    _age_note(data.get("_age_s"), "nomads.com")
+    render.age_note(data.get("_age_s"), "nomads.com")
     return 0
 
 
@@ -629,11 +632,6 @@ def cmd_cache(args) -> int:
                     "run did — please report it")
         return 2
     return 0
-
-
-def _age_note(age, source: str) -> None:
-    if age is not None:
-        render.note(f"  data age {fmt_age(int(age))} · {source}")
 
 
 def main(argv: list[str] | None = None) -> int:

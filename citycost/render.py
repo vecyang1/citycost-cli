@@ -32,6 +32,16 @@ FLAGS = {
 }
 
 
+def fmt_age(seconds: int) -> str:
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
 def flag(country: str) -> str:
     return FLAGS.get((country or "").strip(), "")
 
@@ -47,6 +57,18 @@ def money(v, *, decimals_below: float = 20.0) -> str:
 
 def number(v, digits: int = 1) -> str:
     return "N/A" if v is None else f"{float(v):,.{digits}f}"
+
+
+def signed(v, digits: int = 1) -> str:
+    """A delta with its sign always shown, and `N/A` for an absent one.
+
+    The sign is the whole message here and a bare `2.1` reads as a rise whether
+    it was one or not. Absent stays absent: a movement that could not be
+    computed is not a movement of zero.
+    """
+    if v is None:
+        return "N/A"
+    return f"{v:+.{digits}f}"
 
 
 def percent(v) -> str:
@@ -121,6 +143,14 @@ def mark_best(rendered: str, value, best, *, color: bool = True) -> str:
     if value is None or best is None or value != best:
         return rendered
     return f"{GREEN}🟢{rendered}{RESET}" if color else f"🟢{rendered}"
+
+
+def age_note(age, source: str) -> None:
+    """Print how old a figure is. Absent age prints nothing rather than zero:
+    "age 0s" for an unknown age is the confident wrong answer, and it is the
+    one every reader trusts."""
+    if age is not None:
+        note(f"  data age {fmt_age(int(age))} · {source}")
 
 
 def note(msg: str) -> None:

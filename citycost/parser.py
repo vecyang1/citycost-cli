@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import __version__, fallback, prices, rankings
+from . import __version__, fallback, movers, prices, rankings
 from .net import DEFAULT_MAX_AGE
 
 EPILOG = """\
@@ -117,6 +117,52 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--snapshots", type=int, default=12)
     t.add_argument("--md", action="store_true")
     t.set_defaults(func=cli.cmd_trend)
+
+    mv = common(sub.add_parser(
+        "movers", help="which cities moved most between two snapshots"))
+    # `--from` is required with no default and there are NO positional snapshot
+    # arguments. `movers 2019 current` and `movers current 2019` are both
+    # parseable and both produce a complete table in which every sign is
+    # inverted — Medellin reads -38% and Tokyo +61%. Nothing in the data can
+    # catch a reversed base; only the surface can make the mistake unavailable.
+    # `dest="frm"` because `args.from` is a syntax error.
+    mv.add_argument("--from", dest="frm", required=True, metavar="SNAPSHOT",
+                    help="the BASE snapshot, e.g. 2019")
+    mv.add_argument("--to", default="current", metavar="SNAPSHOT")
+    mv.add_argument("--index", default="cost-of-living",
+                    choices=sorted(rankings.VERTICALS))
+    mv.add_argument("--region", choices=sorted(rankings.REGIONS))
+    mv.add_argument("--column",
+                    help="index column to diff (substring ok, but unlike "
+                         "`rank --sort` it must resolve to ONE identical label "
+                         "in BOTH snapshots — this joins two tables, where a "
+                         "wrong column is invisible)")
+    mv.add_argument("--order", default="abs", choices=list(movers.ORDERS),
+                    help="abs (default) ranks by index points; pct by "
+                         "percentage, which a small base inflates")
+    g = mv.add_mutually_exclusive_group()
+    g.add_argument("--rising", action="store_true",
+                   help="only cities that ROSE in the index")
+    g.add_argument("--falling", action="store_true",
+                   help="only cities that FELL in the index")
+    mv.add_argument("--top", type=int,
+                    help=f"default {movers.DEFAULT_TOP_TEXT} for text and "
+                         f"--md; unlimited for --json and --csv")
+    mv.add_argument("--md", action="store_true")
+    mv.add_argument("--csv", action="store_true")
+    mv.set_defaults(func=cli.cmd_movers)
+
+    # Deliberate absences: no --out/--export/--dir (this fills the cache, it
+    # does not produce a dataset), no --jobs (concurrency is what earned the
+    # seven-day ban), no --source (the subject set is closed).
+    h = common(sub.add_parser(
+        "harvest", help="prefetch every archive snapshot, plan first"))
+    h.add_argument("--index", action="append", dest="indexes",
+                   choices=sorted(rankings.VERTICALS),
+                   help="limit to one vertical (repeatable); default: all")
+    h.add_argument("--execute", action="store_true",
+                   help="actually fetch; without it this prints the plan only")
+    h.set_defaults(func=cli.cmd_harvest)
 
     s = common(sub.add_parser("snapshots", help="available historical snapshots"))
     s.add_argument("--index", default="cost-of-living",

@@ -254,6 +254,25 @@ def panel_fingerprint(table: dict) -> str:
     return h.hexdigest()[:32]
 
 
+def same_panel(a: dict, b: dict) -> bool:
+    """Are these two fetches the SAME table?
+
+    Second member of a family whose first is `_is_one_table_repeated`, and the
+    family lesson — a fix goes to one owner while the defect stays in the
+    sibling — is why this lives here rather than in the one module that
+    currently needs it. `_is_one_table_repeated` cannot serve: it takes a
+    `trend` series of per-city points, returns False below three found points
+    by design, and reads `of` as its discriminator.
+
+    Two EMPTY tables are not "the same table" for any purpose worth naming:
+    they fingerprint identically because there is nothing to fingerprint, and
+    every consumer reads a match as evidence of one specific upstream fault.
+    """
+    if not ((a or {}).get("rows") and (b or {}).get("rows")):
+        return False
+    return panel_fingerprint(a) == panel_fingerprint(b)
+
+
 def fetch(vertical: str = "cost-of-living", *, view: str = "city",
           snapshot: str | None = None, region: str | None = None,
           max_age: int = 21600) -> dict:

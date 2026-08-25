@@ -61,7 +61,12 @@ def _call_tool(name: str, arguments: dict) -> object:
         raise SourceUnavailable(
             f"nomads.com tool '{name}' reported an error: "
             f"{_first_text(result)[:200]}",
-            "check the argument names against `citycost doctor --tools`")
+            # Names a file, not a command: there is no `--tools` flag and
+            # never was. A remedy pointing at a command that exits immediately
+            # is worse than none, because the reader spends their attention on
+            # the tool rather than on the fault.
+            "nomads.com owns these argument names and may have changed them; "
+            "this client builds them in citycost/discover.py")
     text = _first_text(result)
     if not text:
         raise SourceUnavailable(
