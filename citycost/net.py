@@ -372,11 +372,37 @@ def _http_post_json_once(url: str, payload: dict, *,
 
 # -- cache -----------------------------------------------------------------
 
-def _cache_path(key: str) -> Path:
+#: Where a *pinned* entry lives. The retention decision (may I delete this?)
+#: is carried by the PATH, never by a field inside the payload — because the
+#: payload is schema-versioned and `_schema` is *designed* to change: bumping
+#: it is how a parser fix invalidates stale entries on purpose. Putting the
+#: keep-or-delete decision inside a versioned blob would make the one event the
+#: system plans for the event that un-protects the archive. A path also
+#: survives a file that no longer parses, and needs no cooperation from the
+#: delete loop: `Path.glob("*.json")` is non-recursive, so the two functions
+#: below already spare this directory without a line changing. Tests pin that
+#: in both directions, so a future `rglob` "fix" goes red instead of silently
+#: deleting a corpus that cannot be re-taken while the address is banned.
+ARCHIVE_DIR = "keep"
+
+
+def _cache_path(key: str, *, archival: bool = False) -> Path:
     import hashlib
     safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in key)[:80]
     digest = hashlib.sha256(key.encode()).hexdigest()[:10]
-    return cache_dir() / f"{safe}.{digest}.json"
+    base = cache_dir() / ARCHIVE_DIR if archival else cache_dir()
+    return base / f"{safe}.{digest}.json"
+
+
+def _existing_path(key: str) -> Path | None:
+    """Wherever the entry actually is. An entry can migrate between the two
+    directories when its snapshot ages past the pin threshold, so a reader
+    that looked in only one would report `absent` for a file it owns."""
+    for archival in (True, False):
+        p = _cache_path(key, archival=archival)
+        if p.exists():
+            return p
+    return None
 
 
 #: Did this process actually touch the network? `--fetch-mode never/always` is
@@ -396,67 +422,211 @@ def reset_reads() -> None:
     _READS.update(live=0, cached=0)
 
 
-def cached_json(key: str, schema: str, max_age: int, produce):
+def cache_probe(key: str, schema: str, max_age: int, *,
+                archival: bool = False) -> dict:
+    """Can the cache answer this, and if not, why not — as a REASON, not a bool.
+
+    One predicate, consulted by both the reader (`cached_json`) and by anything
+    that wants to *plan* reads without performing them. Two implementations of
+    "file exists AND schema matches AND age is acceptable" agree on the day
+    they are written and diverge silently after; here the divergence would be
+    denominated in requests against a source that bans by address for a week.
+
+    States: `absent` · `unreadable` · `schema_mismatch` · `stale` · `fresh`.
+    "You have 140 of 192" and "you have 192 files, all under the previous
+    schema" cost 52 and 192 requests respectively, and a boolean makes them the
+    same sentence.
+
+    `max_age <= 0` is a distinct state meaning *read live*, not a very small
+    number, and it is honoured for a pinned entry exactly as for any other.
+    That rule is written once, here: a conditionally-honoured `--max-age 0`
+    would recreate 1.3.0's accepted-and-silently-ignored defect one layer down,
+    where nothing observes it. It is also the only non-destructive way to
+    replace a poisoned pin.
+    """
+    path = _existing_path(key)
+    if path is None:
+        return {"state": "absent", "age_s": None, "path": None, "blob": None}
+    try:
+        age = int(time.time() - path.stat().st_mtime)
+        blob = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"state": "unreadable", "age_s": None, "path": path, "blob": None}
+    if not isinstance(blob, dict) or blob.get("_schema") != schema:
+        return {"state": "schema_mismatch", "age_s": age, "path": path,
+                "blob": blob if isinstance(blob, dict) else None}
+    if max_age <= 0:
+        return {"state": "stale", "age_s": age, "path": path, "blob": blob}
+    if archival or age < max_age:
+        return {"state": "fresh", "age_s": age, "path": path, "blob": blob}
+    return {"state": "stale", "age_s": age, "path": path, "blob": blob}
+
+
+def cached_json(key: str, schema: str, max_age: int, produce, *,
+                archival: bool = False, meta_hook=None):
     """Return `(payload, age_seconds, from_cache)`.
 
-    `produce()` is only called when the cache misses, is stale, or was written
-    under a different schema. The age travels with the payload so a caller can
-    print it — a figure whose age is unstated is a figure that will be read as
-    current.
+    `produce()` is only called when `cache_probe` says the cache cannot answer.
+    The age travels with the payload so a caller can print it — a figure whose
+    age is unstated is a figure that will be read as current.
+
+    `archival=True` exempts the entry from the age clock and writes it where
+    `prune_cache` will not remove it. The caller decides that, because only the
+    caller knows whether the thing it fetched is a published artefact or a
+    moving one; `net` deliberately holds no opinion about snapshot ids.
+
+    `meta_hook(payload, prior_meta) -> dict` runs only on a live read, so a
+    caller can record a fact about the *transition* — did a table we called
+    immutable actually change — without opening the cache file itself, which
+    would make it a second reader of the one file this function owns. A hook
+    returning `{"moved": True}` vetoes the pin: an id observed with two
+    different contents has disproved its own immutability, and no age rule may
+    overrule an observation.
     """
-    path = _cache_path(key)
-    if max_age > 0 and path.exists():
-        age = int(time.time() - path.stat().st_mtime)
-        if age < max_age:
-            try:
-                blob = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                blob = None
-            if isinstance(blob, dict) and blob.get("_schema") == schema:
-                _READS["cached"] += 1
-                return blob.get("payload"), age, True
+    probe = cache_probe(key, schema, max_age, archival=archival)
+    if probe["state"] == "fresh":
+        _READS["cached"] += 1
+        return probe["blob"].get("payload"), probe["age_s"], True
+
+    prior_meta = {}
+    if isinstance(probe["blob"], dict):
+        prior_meta = probe["blob"].get("_meta") or {}
 
     # Counted before the call, not after: a live attempt that *fails* still
     # exercised the transport, which is the question this counter answers.
     _READS["live"] += 1
     payload = produce()
-    try:
-        cache_dir().mkdir(parents=True, exist_ok=True)
-        _cache_path(key).write_text(
-            json.dumps({"_schema": schema, "payload": payload}),
-            encoding="utf-8")
-    except OSError:
-        pass  # an unwritable cache must not fail a read that already succeeded
+    meta = {}
+    if meta_hook is not None:
+        meta = meta_hook(payload, prior_meta) or {}
+    if meta.get("moved"):
+        archival = False
+    cache_write(key, schema, payload, meta=meta, archival=archival)
     return payload, 0, False
 
 
-def prune_cache(retention: int = CACHE_RETENTION) -> int:
+def cache_write(key: str, schema: str, payload, *, meta: dict | None = None,
+                archival: bool = False) -> None:
+    """The one writer. Records `_fetched_at` because mtime is not a fact about
+    the read: a corpus copied between machines or restored from backup arrives
+    with every mtime set to today, so a 300-day-old figure reports `age 0s`."""
+    try:
+        target = _cache_path(key, archival=archival)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps({"_schema": schema, "_fetched_at": int(time.time()),
+                        "_meta": meta or {}, "payload": payload}),
+            encoding="utf-8")
+        # An entry that changed side must not be left behind in the other
+        # directory: two copies of one key is two answers to one question, and
+        # the stale one wins whenever it is the first found.
+        other = _cache_path(key, archival=not archival)
+        if other.exists():
+            other.unlink()
+    except OSError:
+        pass  # an unwritable cache must not fail a read that already succeeded
+
+
+def cache_entries(*, archival: bool | None = None) -> list[Path]:
+    """Every cache file, optionally only one side. Non-recursive on purpose per
+    directory, so the two sets stay disjoint and countable."""
     d = cache_dir()
-    if not d.exists():
-        return 0
-    now, removed = time.time(), 0
-    for f in d.glob("*.json"):
+    out = []
+    if archival in (None, False) and d.exists():
+        out += sorted(d.glob("*.json"))
+    if archival in (None, True) and (d / ARCHIVE_DIR).exists():
+        out += sorted((d / ARCHIVE_DIR).glob("*.json"))
+    return out
+
+
+def cache_status() -> dict:
+    """Facts about the corpus on disk, read-only, no network.
+
+    Reports `mtime_skew` because mtime is not a fact about when a figure was
+    read: a corpus copied between machines or restored from backup arrives with
+    every mtime set to today, so a 300-day-old entry announces `age 0s` and a
+    genuinely stale figure passes every freshness rule in the tool. Comparing
+    it against the recorded `_fetched_at` is the only observer for that, and it
+    costs a stat and a parse.
+    """
+    now = time.time()
+    out = {"dir": str(cache_dir()), "ordinary": 0, "archived": 0, "bytes": 0,
+           "unreadable": 0, "mtime_skew": 0, "oldest_fetch_s": None,
+           "schemas": {}}
+    for archival in (False, True):
+        for f in cache_entries(archival=archival):
+            out["archived" if archival else "ordinary"] += 1
+            try:
+                out["bytes"] += f.stat().st_size
+                blob = json.loads(f.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                out["unreadable"] += 1
+                continue
+            if not isinstance(blob, dict):
+                out["unreadable"] += 1
+                continue
+            sch = blob.get("_schema") or "?"
+            out["schemas"][sch] = out["schemas"].get(sch, 0) + 1
+            fetched = blob.get("_fetched_at")
+            if isinstance(fetched, (int, float)):
+                age = int(now - fetched)
+                if out["oldest_fetch_s"] is None or age > out["oldest_fetch_s"]:
+                    out["oldest_fetch_s"] = age
+                try:
+                    if abs(f.stat().st_mtime - fetched) > 3600:
+                        out["mtime_skew"] += 1
+                except OSError:
+                    pass
+    return out
+
+
+def prune_cache(retention: int = CACHE_RETENTION) -> dict:
+    """Remove expired ordinary entries. Reports its own denominator.
+
+    Returning a bare count made `pruned 0 expired cache files` the same
+    sentence for a clean cache and for a `CITYCOST_CACHE_DIR` pointing at an
+    empty or misspelt directory — and the second one is a user reading a zero
+    denominator as a clean bill.
+    """
+    d = cache_dir()
+    now, removed, scanned = time.time(), 0, 0
+    for f in d.glob("*.json") if d.exists() else []:
+        scanned += 1
         try:
             if now - f.stat().st_mtime > retention:
                 f.unlink()
                 removed += 1
         except OSError:
             pass
-    return removed
+    return {"scanned": scanned, "removed": removed,
+            "protected": len(cache_entries(archival=True)), "dir": str(d)}
 
 
-def clear_cache() -> int:
-    d = cache_dir()
-    if not d.exists():
-        return 0
-    n = 0
-    for f in d.glob("*.json"):
+def clear_cache(*, include_archive: bool = False) -> dict:
+    """Delete cache entries. The archive is spared unless explicitly named.
+
+    `--clear` is reached by someone who wants a clean read, not by someone who
+    wants to destroy a corpus that took hundreds of throttled requests and
+    cannot be re-taken while the address is banned. Those are different
+    intentions and they get different flags.
+    """
+    d, n, kept = cache_dir(), 0, 0
+    for f in d.glob("*.json") if d.exists() else []:
         try:
             f.unlink()
             n += 1
         except OSError:
             pass
-    return n
+    for f in cache_entries(archival=True):
+        if include_archive:
+            try:
+                f.unlink()
+                n += 1
+            except OSError:
+                pass
+        else:
+            kept += 1
+    return {"removed": n, "protected": kept, "dir": str(d)}
 
 
 def urlencode(params: dict) -> str:

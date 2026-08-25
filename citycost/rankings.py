@@ -13,7 +13,11 @@ index as the crime index and be believed.
 
 from __future__ import annotations
 
+import datetime as _dt
+import hashlib
+import json as _json
 import re
+import time
 
 from .errors import LayoutChanged, SourceUnavailable
 from .htmlparse import find_table, parse_tables, squash, text_of
@@ -21,6 +25,21 @@ from .net import cached_json, http_get, urlencode
 
 BASE = "https://www.numbeo.com"
 SCHEMA = "numbeo-rankings-2"
+
+#: What a Numbeo snapshot id looks like. ONE object, used by the reader that
+#: harvests the ids off the page's `<select>` and by the predicate that decides
+#: whether an id may be pinned. Two literals for one grammar drift: a widened
+#: pattern accepted by the reader and unknown to the predicate would change
+#: behaviour with nothing going red.
+SNAPSHOT_ID = re.compile(r"\d{4}(-mid)?")
+
+#: How long after a named period ends before its table is treated as finished.
+#: An ASSUMPTION about Numbeo's publication cadence, not a measurement — which
+#: is why it is generous. Nothing observed distinguishes "frozen at
+#: publication" from "still filling": DATA-STRATEGY records 2026-mid at 547
+#: rows against `current`'s 558, and that single reading is equally consistent
+#: with both stories.
+PUBLICATION_CYCLE_DAYS = 180
 
 #: vertical -> URL path segment. The key is what a user types.
 VERTICALS = {
@@ -97,11 +116,17 @@ def _url(vertical: str, view: str, snapshot: str | None,
         raise SourceUnavailable(
             f"unknown index '{vertical}'",
             "one of: " + ", ".join(sorted(VERTICALS)))
+    # `current` is the absence of a title, not a title whose value is
+    # "current". Numbeo answers an unrecognised `?title=` with the current
+    # table, so sending it *worked* — while making one table reachable under
+    # two cache keys, and while making "the URL carries a title" useless as a
+    # test of whether a payload is an archive.
+    title = None if snapshot == "current" else snapshot
     if view == "country":
-        page, params = "rankings_by_country.jsp", {"title": snapshot}
+        page, params = "rankings_by_country.jsp", {"title": title}
     elif view == "region":
         code = REGIONS.get((region or "").lower(), region)
-        page, params = "region_rankings.jsp", {"title": snapshot, "region": code}
+        page, params = "region_rankings.jsp", {"title": title, "region": code}
     elif snapshot and snapshot != "current":
         page, params = "rankings.jsp", {"title": snapshot}
     else:
@@ -155,16 +180,103 @@ def _parse(html: str, url: str) -> dict:
     return {"url": url, "columns": [h for _, h in metric_cols], "rows": rows}
 
 
+def is_archival(snapshot: str | None, *, now: float | None = None,
+                moved: bool = False) -> bool:
+    """May this snapshot be treated as a finished, unchanging artefact?
+
+    Pure, and deliberately so — the deciding input is the snapshot id, which is
+    already inside the cache key and therefore cannot be unavailable. The
+    obvious alternative, asking `snapshots()` which id is newest, sits behind a
+    network read; i.e. it is precisely the input that is missing during the
+    seven-day address ban this whole feature exists to survive, and a missing
+    list would then silently *grant* a pin to a newly published snapshot.
+
+    Every unknown degrades toward MUTABLE, because the two errors are not
+    symmetric. Under-pinning costs one request and, on a banned address,
+    produces the existing loud 429 carrying the server's own deadline.
+    Over-pinning produces a complete, plausible, internally consistent table
+    that never expires and is protected from prune — a wrong number no future
+    run can discover, which is the exact failure class every guard in this
+    repository was written for, made permanent.
+
+    So the rule is coarse on purpose: the whole calendar year the id names must
+    have ended, plus one publication cycle. On 2026-08-25 that pins `2025-mid`
+    and everything older, and refuses `2026` and `2026-mid` — the current
+    half-year, which nothing has measured to be finished. The cost is two
+    re-fetches per vertical out of 31.
+    """
+    if moved or not snapshot or snapshot == "current":
+        return False
+    if not SNAPSHOT_ID.fullmatch(str(snapshot)):
+        return False
+    try:
+        year = int(str(snapshot)[:4])
+    except ValueError:
+        return False
+    ended = _dt.datetime(year + 1, 1, 1, tzinfo=_dt.timezone.utc).timestamp()
+    return (now if now is not None else time.time()) >= (
+        ended + PUBLICATION_CYCLE_DAYS * 86400)
+
+
+def panel_fingerprint(table: dict) -> str:
+    """A stable digest of a whole parsed table: row count plus every
+    (place, metrics) pair in page order.
+
+    One owner, because two consumers ask the same question for opposite
+    reasons. `fetch` compares it across time to falsify the claim that a pinned
+    snapshot never moves; `movers` compares it across two snapshot ids to catch
+    `?title=` being accepted and silently ignored. A second implementation
+    would agree on the day it was written.
+    """
+    rows = (table or {}).get("rows") or []
+    h = hashlib.sha256()
+    h.update(str(len(rows)).encode())
+    for r in rows:
+        h.update(_json.dumps(
+            [r.get("place"), sorted((r.get("metrics") or {}).items(),
+                                    key=lambda kv: kv[0])],
+            sort_keys=True, default=str).encode())
+    return h.hexdigest()[:32]
+
+
 def fetch(vertical: str = "cost-of-living", *, view: str = "city",
           snapshot: str | None = None, region: str | None = None,
           max_age: int = 21600) -> dict:
-    """One ranking table. Cached longer than city prices: an index snapshot is
-    a published artefact that does not move between requests."""
+    """One ranking table.
+
+    A titled snapshot old enough to be finished is written as an *archival*
+    entry: no age clock, and out of reach of `prune_cache`. `max_age=0` still
+    forces a live read of it — `doctor`'s whole contract is that no cache can
+    answer it, and a conditionally-honoured 0 would reinstate the 1.2.0 defect
+    where an hour-old cache reported a seven-day-banned address as `ok`.
+
+    Every archival read also records a fingerprint of what it saw. That is what
+    turns "this snapshot is immutable" from an assumption into a falsifiable
+    claim: an id ever observed with two different contents is marked `_moved`
+    and is permanently ineligible for pinning. A check that cannot fail is not
+    a check, and this one costs no extra request.
+    """
     url = _url(vertical, view, snapshot, region)
+    arch = is_archival(snapshot)
+
+    def _meta(payload, prior):
+        fp = panel_fingerprint(payload)
+        was = prior.get("fingerprint")
+        moved = bool(was and was != fp) or bool(prior.get("moved"))
+        if moved and arch:
+            from . import render
+            render.note(f"  ! {snapshot} was published as final and its "
+                        f"contents changed ({was} -> {fp}); it will not be "
+                        f"cached as an archive")
+        return {"fingerprint": fp, "moved": moved, "snapshot": snapshot,
+                "vertical": vertical, "url": url}
+
     payload, age, _ = cached_json(f"rank:{url}", SCHEMA, max_age,
-                                  lambda: _parse(http_get(url), url))
+                                  lambda: _parse(http_get(url), url),
+                                  archival=arch, meta_hook=_meta)
     out = dict(payload or {})
     out["_age_s"] = age
+    out["_archival"] = arch
     out["vertical"] = vertical
     out["view"] = view
     out["snapshot"] = snapshot or "current"
@@ -186,7 +298,7 @@ def snapshots(vertical: str = "cost-of-living", *, max_age: int = 86400) -> list
         opts = re.findall(r'<option[^>]+value="([^"]+)"[^>]*>', html)
         # The page carries other <select>s (currency, display column); keep only
         # values that look like a Numbeo snapshot id.
-        return [o for o in opts if re.fullmatch(r"\d{4}(-mid)?", o)]
+        return [o for o in opts if SNAPSHOT_ID.fullmatch(o)]
 
     payload, _, _ = cached_json(f"snapshots:{url}", SCHEMA, max_age, produce)
     return list(payload or [])

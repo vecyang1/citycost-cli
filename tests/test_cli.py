@@ -1,3 +1,4 @@
+import argparse
 import io
 import json
 import unittest
@@ -17,13 +18,44 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
+def _subparsers_action(p):
+    """argparse exposes its subcommands only through a private action.
+
+    Worth reaching for anyway: the alternative is a tuple of names in this
+    file, which grades whatever somebody remembered to add to it. A
+    subcommand added later would then be ungraded while this test still
+    reported green — the denominator that silently narrows.
+    """
+    subs = [a for a in p._actions if isinstance(a, argparse._SubParsersAction)]
+    assert len(subs) == 1, f"expected one subparsers action, got {len(subs)}"
+    return subs[0]
+
+
 class TestParser(unittest.TestCase):
     def test_every_subcommand_is_reachable(self):
         p = cli.build_parser()
-        for cmd in ("discover", "compare", "rank", "trend", "snapshots",
-                    "find", "city", "meetups", "doctor", "cache"):
+        names = sorted(_subparsers_action(p).choices)
+        # Report the denominator. A selector that silently stops finding
+        # subcommands would otherwise pass this loop by ranging over nothing.
+        self.assertGreater(len(names), 1, names)
+        for cmd in names:
             with self.subTest(cmd=cmd):
                 self.assertIsNotNone(p.parse_args([cmd] + _min_args(cmd)))
+
+    def test_every_command_function_is_wired_to_a_subcommand(self):
+        """An implemented command nobody can invoke is an orphaned feature.
+
+        Both sides are enumerated independently — the parser's own choices and
+        the `cmd_*` functions defined in `cli` — so this fails in both
+        directions: a command implemented and never wired, and a subcommand
+        wired to a function that no longer exists. A third hardcoded list here
+        would only ever grade itself.
+        """
+        implemented = {n for n in vars(cli) if n.startswith("cmd_")
+                       and callable(getattr(cli, n))}
+        wired = {sp.get_default("func").__name__
+                 for sp in _subparsers_action(cli.build_parser()).choices.values()}
+        self.assertEqual(implemented, wired)
 
     def test_no_subcommand_is_an_error_not_a_silent_success(self):
         with self.assertRaises(SystemExit):

@@ -1,0 +1,4 @@
+{
+  "required_root_files": ["README.md", "CHANGELOG.md", "docs/DATA-STRATEGY.md"],
+  "why": "This repository is public and its owner surfaces are the three files above. The vault's default check looks for AGENTS.md / task_plan.md / progress.md / handoff.md / decisions.md and reports 'missing core docs' without one of these; creating those files to satisfy the audit would add five empty owners for facts README, CHANGELOG and DATA-STRATEGY already own. Declaring the real surfaces is the supported way to say so - see 00 - System/contracts/project-context-routing.md."
+}

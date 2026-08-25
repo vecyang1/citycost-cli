@@ -12,7 +12,6 @@ stay pipe-clean.
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 
@@ -20,20 +19,11 @@ from . import (__version__, budget, discover, fallback, prices, rankings,
                render)
 from .errors import CitycostError
 from . import net
-from .net import DEFAULT_MAX_AGE, clear_cache, fmt_age, prune_cache
+from .net import clear_cache, fmt_age, prune_cache
+# Re-exported, not redefined: `cli.build_parser` is the name every caller
+# and test already uses, and the parser itself lives in one module.
+from .parser import build_parser
 
-EPILOG = """\
-examples:
-  citycost discover --max-cost 1200 --region Asia --min-internet 30 --verify
-  citycost compare Da-Nang Hanoi Chiang-Mai --md --crosscheck
-  citycost rank --index quality-of-life --top 15
-  citycost rank --by country --match viet
-  citycost trend Da-Nang --snapshots 10
-  citycost find Vietnam
-
-sources: numbeo.com (public pages) and nomads.com (MCP endpoint).
-Numbeo data is proprietary — cite it, do not redistribute it.
-"""
 
 
 # ---------------------------------------------------------------- discover --
@@ -582,132 +572,68 @@ def _short(text: str, width: int = DETAIL_WIDTH) -> str:
 
 
 def cmd_cache(args) -> int:
-    """`cache` was the one subcommand that could not speak `--json`, which made
-    the README's "every command speaks --json" false for a tenth of the surface
-    — and false in the direction an agent discovers by crashing."""
+    """Report the corpus; delete only when explicitly asked.
+
+    Until 1.4.0 a bare `citycost cache` PRUNED — there was no read-only mode at
+    all, so the command a person runs to *look* at the cache deleted part of
+    it. Harmless while the cache was an hour of convenience; not harmless once
+    it holds a historical corpus that took hundreds of throttled requests and
+    cannot be re-taken while the address is banned. Reading is now the default
+    and every destructive path is named.
+    """
+    live_before = net.reads()["live"]
     if args.clear:
-        removed, verb = clear_cache(), "removed"
+        res = clear_cache(include_archive=args.include_archive)
+        payload = {"action": "cleared", **res}
+        line = (f"removed {res['removed']} cache files"
+                + (f" · {res['protected']} archived entries kept "
+                   f"(--include-archive removes them too)"
+                   if res["protected"] else ""))
+    elif args.prune:
+        res = prune_cache()
+        payload = {"action": "pruned", **res}
+        line = (f"pruned {res['removed']} of {res['scanned']} expired cache "
+                f"files · {res['protected']} archived entries protected "
+                f"· {res['dir']}")
     else:
-        removed, verb = prune_cache(), "pruned"
+        res = net.cache_status()
+        payload = {"action": "status", **res}
+        mb = res["bytes"] / 1_048_576
+        line = (f"{res['ordinary']} cached · {res['archived']} archived "
+                f"(never pruned) · {mb:.1f} MB · {res['dir']}")
+
     if getattr(args, "json", False):
-        render.emit_json({"action": verb, "files": removed})
+        render.emit_json(payload)
     else:
-        suffix = "" if args.clear else " expired"
-        print(f"{verb} {removed}{suffix} cache files")
+        print(line)
+        if payload["action"] == "status":
+            if res["schemas"]:
+                render.note("  schemas: " + ", ".join(
+                    f"{k}={v}" for k, v in sorted(res["schemas"].items())))
+            if res["unreadable"]:
+                render.note(f"  ! {res['unreadable']} entries could not be "
+                            f"parsed and are neither served nor counted as data")
+            if res["mtime_skew"]:
+                # mtime is not a fact about when a figure was read: a corpus
+                # copied between machines arrives with every mtime set to now,
+                # so a stale figure announces `age 0s`.
+                render.note(f"  ! {res['mtime_skew']} entries have an mtime "
+                            f"that disagrees with their recorded fetch time; "
+                            f"their reported age is not trustworthy")
+
+    # A cache command that issued a request is a bug, not a user error: it
+    # would spend proxy bandwidth, or earn a fresh 429, for somebody who ran a
+    # read-only command precisely because they are blocked.
+    if net.reads()["live"] > live_before:
+        render.note("  ! cache commands must not touch the network, and this "
+                    "run did — please report it")
+        return 2
     return 0
 
 
 def _age_note(age, source: str) -> None:
     if age is not None:
         render.note(f"  data age {fmt_age(int(age))} · {source}")
-
-
-# --------------------------------------------------------------- argparse ---
-
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="citycost", description=__doc__.split("\n")[0], epilog=EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--version", action="version", version=f"citycost {__version__}")
-
-    def common(sp, *, cache=True):
-        sp.add_argument("--json", action="store_true", help="JSON output")
-        sp.add_argument("--no-color", action="store_true")
-        sp.add_argument("--fetch-mode", choices=list(fallback.MODES),
-                        default=None,
-                        help="auto (default) tries direct and falls back to "
-                             "the configured fetcher when a source refuses "
-                             "this client; never stays direct; always skips "
-                             "the direct attempt")
-        if cache:
-            sp.add_argument("--max-age", type=int, default=DEFAULT_MAX_AGE,
-                            metavar="SEC",
-                            help=f"reuse cached data younger than this "
-                                 f"(default {DEFAULT_MAX_AGE}; 0 forces live)")
-        return sp
-
-    sub = p.add_subparsers(dest="command", required=True)
-
-    d = common(sub.add_parser("discover", help="which cities qualify (nomads.com)"))
-    d.add_argument("--max-cost", type=float, metavar="USD")
-    d.add_argument("--region")
-    d.add_argument("--country")
-    d.add_argument("--min-internet", type=float, metavar="MBPS")
-    d.add_argument("--min-safety", type=float)
-    d.add_argument("--min-temp", type=float, metavar="C")
-    d.add_argument("--max-temp", type=float, metavar="C")
-    d.add_argument("--limit", type=int, default=20)
-    d.add_argument("--verify", action="store_true",
-                   help="also fetch real Numbeo prices for each result")
-    d.set_defaults(func=cmd_discover)
-
-    c = common(sub.add_parser("compare", help="itemised prices, side by side (numbeo)"))
-    c.add_argument("cities", nargs="+")
-    c.add_argument("--md", action="store_true")
-    c.add_argument("--csv", action="store_true")
-    c.add_argument("--full", action="store_true", help="every scraped row")
-    c.add_argument("--local", action="store_true",
-                   help="native currency; no conversion requested")
-    c.add_argument("--units", default=prices.DEFAULT_UNITS,
-                   choices=["metric", "source"],
-                   help="metric (default) normalises whatever Numbeo served; "
-                        "'source' keeps it, since Numbeo picks by geography")
-    c.add_argument("--crosscheck", action="store_true",
-                   help="add nomads.com as an independent control column")
-    c.set_defaults(func=cmd_compare)
-
-    r = common(sub.add_parser("rank", help="global rankings (numbeo)"))
-    r.add_argument("--index", default="cost-of-living",
-                   choices=sorted(rankings.VERTICALS))
-    r.add_argument("--by", default="city", choices=["city", "country"])
-    r.add_argument("--region", choices=sorted(rankings.REGIONS))
-    r.add_argument("--snapshot", help="e.g. 2026-mid, 2020, or 'current'")
-    r.add_argument("--top", type=int)
-    r.add_argument("--match", help="filter by place name")
-    r.add_argument("--sort", help="sort by a column label (substring ok)")
-    r.add_argument("--md", action="store_true")
-    r.add_argument("--csv", action="store_true")
-    r.add_argument("--full", action="store_true", help="all columns")
-    r.set_defaults(func=cmd_rank)
-
-    t = common(sub.add_parser("trend", help="one city across snapshots"))
-    t.add_argument("city")
-    t.add_argument("--index", default="cost-of-living",
-                   choices=sorted(rankings.VERTICALS))
-    t.add_argument("--column", help="which index column to plot")
-    t.add_argument("--snapshots", type=int, default=12)
-    t.add_argument("--md", action="store_true")
-    t.set_defaults(func=cmd_trend)
-
-    s = common(sub.add_parser("snapshots", help="available historical snapshots"))
-    s.add_argument("--index", default="cost-of-living",
-                   choices=sorted(rankings.VERTICALS))
-    s.set_defaults(func=cmd_snapshots)
-
-    f = common(sub.add_parser("find", help="which slugs Numbeo has for a country"),
-               cache=False)
-    f.add_argument("country")
-    f.set_defaults(func=cmd_find)
-
-    ci = common(sub.add_parser("city", help="nomads.com detail for one slug"))
-    ci.add_argument("slug")
-    ci.set_defaults(func=cmd_city)
-
-    m = common(sub.add_parser("meetups", help="upcoming nomad meetups"))
-    m.add_argument("--city")
-    m.add_argument("--country")
-    m.add_argument("--days-ahead", type=int)
-    m.add_argument("--limit", type=int, default=20)
-    m.set_defaults(func=cmd_meetups)
-
-    do = common(sub.add_parser("doctor", help="check every source is reachable"))
-    do.set_defaults(func=cmd_doctor)
-
-    ca = sub.add_parser("cache", help="prune or clear the local cache")
-    ca.add_argument("--clear", action="store_true")
-    ca.add_argument("--json", action="store_true", help="JSON output")
-    ca.set_defaults(func=cmd_cache)
-    return p
 
 
 def main(argv: list[str] | None = None) -> int:
