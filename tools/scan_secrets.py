@@ -23,7 +23,21 @@ PATTERNS = {
     "assigned-secret": re.compile(
         r"(?i)\b(api[_-]?key|secret|passwd|password|token|credential)\b\s*[:=]\s*"
         r"['\"][A-Za-z0-9/+=_\-]{16,}['\"]"),
-    "proxy-userinfo": re.compile(r"://[^/\s:@]{3,}:[^/\s@]{6,}@"),
+    # user:pass in a URL, EXCLUDING the three forms that are not credentials:
+    # a regex source (`([^:]+):([^@]+)@`), an f-string or format template
+    # (`{user}:{pass}@`), and a literal placeholder (`user:pass@`). A scanner
+    # that flags those trains its readers to ignore it, and an ignored scanner
+    # protects nothing — measured 2026-08-25, when this pattern produced four
+    # findings and all four were regexes, templates or the word "pass".
+    "proxy-userinfo": re.compile(
+        r"(?i)://(?!\{|\$|<|%|\(|\[)"
+        r"(?!user[s:]|username|your|example|placeholder|changeme|foo|test|"
+        r"my[_-]?user|abc)"
+        r"[A-Za-z0-9._~-]{3,}:"
+        r"(?!\{|\$|<|%|\(|\[)"
+        r"(?!pass[:@]|passwd|password|your|example|placeholder|changeme|"
+        r"secret[:@]|hunter2|xxx)"
+        r"[A-Za-z0-9._~%-]{8,}@"),
     "home-path":      re.compile(r"/Users/[a-z0-9._-]{3,}/"),
     "personal-email": re.compile(r"[A-Za-z0-9._%+-]+@(gmail|foxmail|qq|outlook)\.com"),
 }
