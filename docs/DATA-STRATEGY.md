@@ -202,7 +202,7 @@ the fallback path serves the same units the direct path would have.
 | affordwhere.com | terms permit personal non-commercial use only; its stated Eurostat/OECD sources were checked and **contain no Vietnam at all** |
 | World Bank ICP | country-level only; indices, not prices — useful as a country sanity anchor, not a substitute |
 | Eurostat / OECD | no Southeast Asia price coverage; OECD `DSD_PPP` returns `NoRecordsFound` for VNM |
-| Apify Numbeo actors | ~$0.002–0.005/result, needs no Numbeo key — a reasonable **paid fallback**, not a primary. Pricing read from listing pages; **not verified by running one** (would cost money) |
+| Apify Numbeo actors | **$0.002–0.010/result** across the 8 live actors, plus a per-run start fee of up to $0.01; needs no Numbeo key. Correctly rejected: ~27x the residential lane already wired in and infinitely more than the free one. See the measurement below. |
 | teleport.org | dead — `api.teleport.org` is NXDOMAIN |
 | expatistan.com | Cloudflare 403 on every path including `/robots.txt`; whether an API exists is **UNKNOWN** |
 
@@ -219,7 +219,50 @@ the fallback path serves the same units the direct path would have.
 
 ## Open / unverified
 
-- Apify actor pricing: read, not run.
+- ~~Apify actor pricing: read, not run.~~ **Closed 2026-08-25 — and the
+  verification this item asked for was the wrong one.** A run tells you what
+  you were *charged*; the *price* is declared platform metadata, public,
+  machine-readable, and free to read with no account:
+
+  ```bash
+  curl -s "https://api.apify.com/v2/store?search=numbeo&limit=25"
+  ```
+
+  Read `eventTieredPricingUsd[<your plan>].tieredEventPriceUsd`, **not**
+  `eventPriceUsd`. Both shapes occur — 5 of the 8 actors use the tiered form
+  and carry no `eventPriceUsd` at all, so an extractor that reads only the
+  flat key reports them as having no per-result price. That is the absence
+  this document's own rule 3 is about, met in the wild while checking it.
+  Prices are **tiered by the buyer's Apify plan**; the figures below are the
+  FREE tier, which pays the most.
+
+  | actor | per result | start fee | runs | 30-day success |
+  |---|---|---|---|---|
+  | `sheshinmcfly/numbeo-cost-of-living-scraper` | $0.00200 | $0.00005 | 152 | 29/29 |
+  | `solidcode/numbeo-scraper` | $0.00215 | $0.00500 | 163 | 32/32 |
+  | `trovevault/cost-of-living-scraper` | $0.00250 | $0.00100 | 227 | 30/30 |
+  | `logiover/numbeo-cost-of-living-scrape` | $0.00350 | $0.00005 | 297 | 46/50 |
+  | `parseforge/numbeo-scraper` | $0.00490 | — | 211 | 38/38 |
+  | `automation-lab/numbeo-scraper` | $0.00500 | $0.01000 | 503 | 57/61 |
+  | `crawlerbros/numbeo-scraper` | $0.00500 | $0.00500 | 106 | 30/39 |
+  | `lulzasaur/numbeo-scraper` | $0.01000 | $0.00005 | 133 | 30/30 |
+
+  Two corrections to what this table used to say. The range was given as
+  $0.002–0.005; the real ceiling is **twice that**. And the **start fee was
+  missing entirely**, which inverts the ranking for small queries:
+  `automation-lab` charges $0.01 to start against $0.005 per result, so a
+  one-city question costs three times what its per-result price suggests.
+
+  **The comparison that decides it.** One Numbeo city page is 79 KB
+  (measured). Through the residential lane at $1/GB that is **~$0.000075 per
+  city**; through the VPS already rented, **$0**. The cheapest actor is ~27x
+  the paid lane. Apify's one real advantage is that it uses none of *our*
+  egress, so it is the only option left if both lanes are ever blocked — a
+  third line, not a fallback.
+
+  Still genuinely unrun, and a different question from price: whether any of
+  these actors returns the 55 itemised rows this client needs, and whether
+  the charge matches the declaration. Neither is answerable without spending.
 - ~~Whether every non-cost Numbeo vertical supports `?title=` history.~~
   **Closed 2026-08-25 — measured, all seven do.** Each vertical's oldest
   snapshot was fetched against its newest and the tables differ in every case,

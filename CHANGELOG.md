@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.3.1 — 2026-08-25 — the Apify price was public all along; the run was never the way to read it
+
+Docs only; no code change. The last open item in `docs/DATA-STRATEGY.md` read
+"Apify actor pricing: read, not run" — and the verification it was waiting for
+was the wrong one. A run tells you what you were *charged*. The **price** is
+declared platform metadata: public, machine-readable, free, no account.
+
+```bash
+curl -s "https://api.apify.com/v2/store?search=numbeo&limit=25"
+```
+
+Two corrections to what this repo claimed:
+
+- **The range was $0.002–0.005/result. It is $0.002–0.010** across the eight
+  live Numbeo actors — `lulzasaur/numbeo-scraper` is twice the stated ceiling.
+- **The start fee was missing entirely**, and it inverts the ranking for small
+  queries: `automation-lab/numbeo-scraper` charges $0.01 to start against
+  $0.005 per result, so a one-city question costs three times what its
+  per-result price implies.
+
+Prices are also **tiered by the buyer's Apify plan**; the table now records
+FREE, the most expensive case, and says so. Read
+`eventTieredPricingUsd[<plan>].tieredEventPriceUsd`, **not** `eventPriceUsd` —
+5 of the 8 carry no `eventPriceUsd` at all, and the first extractor written
+here read them as having no price, which is this document's own "absent is not
+zero" rule failing in the hand of the person writing it down.
+
+**The comparison that settles it.** One Numbeo city page is 79 KB (measured
+through this client). At $1/GB that is ~$0.000075 per city on the residential
+lane, and $0 on the VPS already rented. The cheapest actor is ~27x the paid
+lane. Apify stays rejected — with one honest caveat now recorded: it consumes
+none of *our* egress, so it is the only option left if both lanes are ever
+blocked. A third line, not a fallback.
+
+Still unrun, and a different question from price: whether any of these actors
+returns the 55 itemised rows this client needs, and whether the charge matches
+the declaration.
+
 ## 1.3.0 — 2026-08-25 — a trend could not tell history from one table fetched twelve times
 
 **The last open question in `docs/DATA-STRATEGY.md` was "does every non-cost
