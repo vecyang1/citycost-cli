@@ -108,8 +108,17 @@ CITYCOST_FETCH_CMD=my-fetcher {url} --raw
 CITYCOST_POST_CMD=my-fetcher {url} --raw --data @- --header 'Content-Type: application/json'
 ```
 
-citycost runs the command, takes stdout as the body, and requires exit 0. That
-is the entire contract, which is the point: **this repository ships no proxy
+citycost runs the command, takes stdout as the body, and requires exit 0. The
+contract has one more rule, and it exists because the two failures need
+opposite policies:
+
+| fetcher exit | meaning | citycost does |
+|---|---|---|
+| `0` | 2xx | uses the body |
+| `4` | no HTTP answer — dead exit node, failed handshake | retries, 3x with backoff |
+| any other non-zero | answered, non-2xx | fails; retrying a 429 is what makes it worse |
+
+That is the entire contract, which is the point: **this repository ships no proxy
 code and no credentials, and cannot leak what it never holds.** Anything that
 can fetch a URL works — a proxy CLI, a corporate egress, an SSH tunnel, a
 cache, a friend's VPS.

@@ -22,7 +22,7 @@ REPO = TESTS_DIR.parent
 
 #: Raise deliberately when adding tests. A count that only ever moves down
 #: without anyone noticing is the failure this file exists to prevent.
-MIN_TESTS = 176
+MIN_TESTS = 180
 
 
 class TestSuiteIntegrity(unittest.TestCase):

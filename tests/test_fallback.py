@@ -273,6 +273,83 @@ class FetcherContract(TransportBase):
                 net.http_get(URL)
         self.assertIn("citycost-no-such-fetcher", ctx.exception.message)
 
+    def test_a_transport_failure_is_retried_exactly_once(self):
+        """Exit 4 means the fetcher never got an HTTP answer — a dead exit
+        node. That transfers no bandwidth, so the "each attempt costs money"
+        argument does not apply to it. Measured: a TLS handshake failed against
+        a URL that had answered 200 through the same command a minute before,
+        and the whole city read was lost for it."""
+        script = os.path.join(_sandbox.SANDBOX, "flaky.py")
+        counter = os.path.join(_sandbox.SANDBOX, "flaky-count")
+        with open(script, "w") as fh:
+            fh.write("import sys, os\n"
+                     "p = os.environ['FLAKY_COUNT']\n"
+                     "n = int(open(p).read()) if os.path.exists(p) else 0\n"
+                     "open(p, 'w').write(str(n + 1))\n"
+                     "if n == 0:\n"
+                     "    sys.stderr.write('TLS connect error')\n"
+                     "    sys.exit(4)\n"
+                     "sys.stdout.write('RECOVERED')\n")
+        os.environ["FLAKY_COUNT"] = counter
+        if os.path.exists(counter):
+            os.remove(counter)
+        os.environ[fallback.GET_CMD_ENV] = f"{sys.executable} {script} {{url}}"
+        with mock.patch.object(net, "_http_get_once", side_effect=blocked(429)):
+            self.assertEqual(net.http_get(URL), "RECOVERED")
+        with open(counter) as fh:
+            self.assertEqual(fh.read(), "2")
+
+    def test_a_transport_failure_is_not_retried_forever(self):
+        script = os.path.join(_sandbox.SANDBOX, "always4.py")
+        counter = os.path.join(_sandbox.SANDBOX, "always4-count")
+        with open(script, "w") as fh:
+            fh.write("import sys, os\n"
+                     "p = os.environ['ALWAYS4_COUNT']\n"
+                     "n = int(open(p).read()) if os.path.exists(p) else 0\n"
+                     "open(p, 'w').write(str(n + 1))\n"
+                     "sys.stderr.write('still dead')\n"
+                     "sys.exit(4)\n")
+        os.environ["ALWAYS4_COUNT"] = counter
+        if os.path.exists(counter):
+            os.remove(counter)
+        os.environ[fallback.GET_CMD_ENV] = f"{sys.executable} {script} {{url}}"
+        with mock.patch.object(net, "_http_get_once", side_effect=blocked(429)):
+            with mock.patch.object(fallback.time, "sleep"):
+                with self.assertRaises(SourceUnavailable):
+                    net.http_get(URL)
+        with open(counter) as fh:
+            self.assertEqual(fh.read(), str(fallback.TRANSPORT_RETRIES + 1))
+
+    def test_the_backoff_table_covers_every_attempt(self):
+        """An off-by-one here is an IndexError on the last retry — i.e. the
+        transport failure turns into a crash instead of a clean error, and only
+        during a burst, which is when nobody is reading carefully."""
+        self.assertEqual(len(fallback.TRANSPORT_BACKOFF),
+                         fallback.TRANSPORT_RETRIES + 1)
+
+    def test_a_non_2xx_answer_is_never_retried(self):
+        """Exit 1 means the remote answered and said no. Retrying a 429 is
+        what makes a rate limit worse — the failure this whole module exists
+        to stop causing."""
+        counter = os.path.join(_sandbox.SANDBOX, "answer-count")
+        script = os.path.join(_sandbox.SANDBOX, "answer.py")
+        with open(script, "w") as fh:
+            fh.write("import sys, os\n"
+                     "p = os.environ['ANSWER_COUNT']\n"
+                     "n = int(open(p).read()) if os.path.exists(p) else 0\n"
+                     "open(p, 'w').write(str(n + 1))\n"
+                     "sys.stderr.write('429 from upstream')\n"
+                     "sys.exit(1)\n")
+        os.environ["ANSWER_COUNT"] = counter
+        if os.path.exists(counter):
+            os.remove(counter)
+        os.environ[fallback.GET_CMD_ENV] = f"{sys.executable} {script} {{url}}"
+        with mock.patch.object(net, "_http_get_once", side_effect=blocked(429)):
+            with self.assertRaises(SourceUnavailable):
+                net.http_get(URL)
+        with open(counter) as fh:
+            self.assertEqual(fh.read(), "1")
+
     def test_the_fetcher_is_attempted_once_not_retried(self):
         os.environ[fallback.GET_CMD_ENV] = CMD_FAIL
         with mock.patch.object(net, "_http_get_once", side_effect=blocked(429)):

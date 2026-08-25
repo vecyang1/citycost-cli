@@ -46,6 +46,13 @@ class SourceUnavailable(CitycostError):
     """
 
     def __init__(self, message: str, remedy: str = "",
-                 status: int | None = None) -> None:
+                 status: int | None = None,
+                 exit_code: int | None = None) -> None:
         super().__init__(message, remedy)
+        #: HTTP status, when a server answered.
         self.status = status
+        #: Process exit code, when an *external fetcher* failed. Deliberately a
+        #: separate field: overloading `status` would make 403-the-HTTP-status
+        #: and 4-the-exit-code the same kind of thing, and the first reader to
+        #: compare one against the other's vocabulary gets a plausible answer.
+        self.exit_code = exit_code

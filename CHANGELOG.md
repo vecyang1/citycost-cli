@@ -62,6 +62,20 @@ being loud, not by refusing to act.
   the bug was gone. A fingerprint blind to a fix is worse than none: it
   certifies the stale answer. Now covers keys, values and the conversion
   factors, via a `schema_for()` the tests call rather than restate.
+- **A dead proxy exit lost a whole city read.** The fetcher was attempted
+  exactly once, on the argument that every attempt costs bandwidth. That is
+  true of an *answer* and false of a *transport failure*: a TLS handshake that
+  never completes transfers nothing. Measured against a known-good 2xx through
+  a residential pool: **6 failures in 24 attempts**, then 0 in the next 10 —
+  bursty, not steady. `ultra-low-cost-scraper` now exits **4** for "no HTTP
+  answer" as distinct from **1** for "answered, non-2xx", and citycost retries
+  only 4, three times, with backoff. A 429 is still never retried; that is the
+  whole point of splitting the codes. (A first sample blamed one exit country;
+  a larger one did not replicate it, so the fix is the retry, not the geo.)
+- **`SourceUnavailable.status` was about to carry an exit code too.** Split
+  into `status` (HTTP) and `exit_code` (process), because the first reader to
+  compare one against the other's vocabulary gets a plausible answer — `4` is
+  not an HTTP status and `403` is not an exit code.
 - **`doctor` failed the whole transport check on one flaky proxy attempt.**
   Residential exit nodes die mid-request — measured: the probe failed once and
   the identical command succeeded seconds later. The health check now makes two
@@ -83,7 +97,7 @@ being loud, not by refusing to act.
   already set and is looking straight at, is a right answer to the wrong
   question.
 
-**Tests** 125 → 176. `tests/_sandbox.py` now also pins `CITYCOST_CONFIG` into
+**Tests** 125 → 180. `tests/_sandbox.py` now also pins `CITYCOST_CONFIG` into
 the sandbox and removes the three command variables — a location wants to be
 *set somewhere disposable*, a switch wants to be *absent*; without both, a unit
 test would have run through the developer's real, paid proxy. Landed in the

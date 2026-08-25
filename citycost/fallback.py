@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 from .errors import SourceUnavailable
@@ -59,6 +60,29 @@ DEFAULT_MODE = "auto"
 #: wrong*. Only these justify spending someone's bandwidth: a 404 through a
 #: residential proxy is the same 404, bought.
 BLOCKED_STATUSES = frozenset({403, 429, 503})
+
+#: Exit codes a fetcher may use to say "I never got an HTTP answer" — a dead
+#: proxy exit, a broken tunnel, a TLS handshake that failed. Those are blips and
+#: cost no bandwidth, so they are worth exactly one retry.
+#:
+#: Every *other* non-zero exit means the remote answered and the answer was not
+#: a 2xx. Retrying that is how a rate limit gets worse. One code for both would
+#: force the caller to be wrong about one of them, so the contract publishes
+#: two — and a fetcher that never emits 4 simply never gets retried.
+TRANSPORT_EXIT_CODES = frozenset({4})
+
+#: Measured 2026-08-25 against a known-good 2xx through a residential pool:
+#: **6 transport failures in 24 attempts** across two windows, then 0 in the
+#: next 10 — they arrive in bursts, not at a steady rate. A single retry would
+#: still lose a whole read a quarter of the time during a burst; three brings
+#: that under 1%. A first sample suggested one exit country was to blame and a
+#: larger one did not replicate it, so the fix is here rather than in which
+#: country the fetcher asks for.
+#:
+#: Cheap because these cost no bandwidth: nothing was transferred. That is the
+#: entire reason this is retried while a 429 never is.
+TRANSPORT_RETRIES = 3
+TRANSPORT_BACKOFF = (0.0, 0.4, 1.0, 2.0)
 
 _OWNED_KEYS = (GET_CMD_ENV, POST_CMD_ENV, MODE_ENV)
 
@@ -175,7 +199,24 @@ def is_blocked(exc: SourceUnavailable) -> bool:
 
 def run(url: str, template: str, timeout: int, *,
         data: bytes | None = None, method: str = "GET") -> str:
-    """Run the external fetcher and return the body. Exit 0 or raise."""
+    """Run the external fetcher and return the body. Exit 0 or raise.
+
+    Retried only on `TRANSPORT_EXIT_CODES`, and only once.
+    """
+    for attempt in range(TRANSPORT_RETRIES + 1):
+        if TRANSPORT_BACKOFF[attempt]:
+            time.sleep(TRANSPORT_BACKOFF[attempt])
+        try:
+            return _run_once(url, template, timeout, data=data, method=method)
+        except SourceUnavailable as exc:
+            if (attempt == TRANSPORT_RETRIES
+                    or exc.exit_code not in TRANSPORT_EXIT_CODES):
+                raise
+    raise AssertionError("unreachable")          # pragma: no cover
+
+
+def _run_once(url: str, template: str, timeout: int, *,
+              data: bytes | None = None, method: str = "GET") -> str:
     if "{url}" not in template:
         raise SourceUnavailable(
             f"the external fetch command must contain the literal {{url}} "
@@ -205,9 +246,14 @@ def run(url: str, template: str, timeout: int, *,
         # ~20 KB of plausible HTML and would parse as content if trusted. The
         # contract is exit 0 on 2xx only, precisely so this branch can refuse.
         err = proc.stderr.decode("utf-8", "replace").strip()[:300]
+        transport = proc.returncode in TRANSPORT_EXIT_CODES
         raise SourceUnavailable(
-            f"external {method} fetcher exited {proc.returncode} for {url}: {err}",
-            "the fetcher must exit 0 only on a 2xx response")
+            f"external {method} fetcher exited {proc.returncode} for {url}: "
+            f"{err}",
+            "the exit node failed before any HTTP answer; retried once already"
+            if transport else
+            "the fetcher must exit 0 only on a 2xx response",
+            exit_code=proc.returncode)
     if not proc.stdout:
         raise SourceUnavailable(
             f"external {method} fetcher returned an empty body for {url}",
