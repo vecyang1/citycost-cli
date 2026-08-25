@@ -6,7 +6,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from . import _sandbox  # noqa: F401
-from citycost import cli, prices, rankings
+import pathlib
+import re
+
+from citycost import cli, movers, panel, prices, rankings
 from .test_htmlparse import RANKING_HTML
 from .test_prices import PAGE
 
@@ -297,6 +300,65 @@ class EveryCommandSpeaksJson(unittest.TestCase):
                 self.assertIn("--json", flags,
                               f"`citycost {name} --json` exits 2; the README "
                               f"promises every command speaks it")
+
+
+class TestEveryDriftStateIsRendered(unittest.TestCase):
+    """A drift value the CLI has no sentence for is a refusal the reader cannot
+    act on.
+
+    Measured: `identical_tables_cause_unknown` shipped with an exit code, a
+    `--json` field and NO stderr note — so a text-mode user saw an empty table
+    and a non-zero exit with nothing said. The denominator is `movers`' own
+    vocabulary rather than a list retyped here, so a fourth value added later
+    is either rendered or visibly missing.
+    """
+
+    def _drift_values(self):
+        src = pathlib.Path(movers.__file__).read_text(encoding="utf-8")
+        found = set(re.findall(r'drift == "([a-z_]+)"', src))
+        found |= set(re.findall(r'drift = "([a-z_]+)"', src))
+        return found
+
+    def test_the_vocabulary_is_not_empty(self):
+        # A selector that stops matching would otherwise pass the loop below
+        # by ranging over nothing.
+        self.assertGreaterEqual(len(self._drift_values()), 3,
+                                self._drift_values())
+
+    def test_each_one_has_a_sentence_in_the_renderer(self):
+        src = pathlib.Path(panel.__file__).read_text(encoding="utf-8")
+        missing = [d for d in sorted(self._drift_values()) if d not in src]
+        self.assertEqual(missing, [], f"drift states with no note: {missing}")
+
+
+class TestPanelPercentages(unittest.TestCase):
+    """An unknown percentage must print as unknown, not crash the branch that
+    exists to report it.
+
+    `movers` returns None for an overlap it could not compute — an empty side
+    has no denominator, and that is the correct answer rather than a zero.
+    Interpolating it with `:.0f` raises TypeError from inside the honest
+    refusal, so the degenerate run this code was written for was the one input
+    that killed it.
+    """
+
+    def test_a_known_share_renders(self):
+        self.assertEqual(panel._pct(91.0), "91%")
+        self.assertEqual(panel._pct(0.93, of=1), "93%")
+
+    def test_an_unknown_share_renders_as_unknown_not_zero(self):
+        self.assertEqual(panel._pct(None), "unknown")
+        self.assertEqual(panel._pct(None, of=1), "unknown")
+
+    def test_no_percentage_in_the_panel_renderer_formats_a_raw_value(self):
+        """The decidable half: a future `:.0f` on a join figure reintroduces
+        the crash, and only a reader would notice. Ranged over the file rather
+        than over the two call sites that exist today."""
+        src = pathlib.Path(panel.__file__).read_text(encoding="utf-8")
+        for bad in ("overlap_pct_of_smaller']:.", "floor_pct']:.",
+                    "same_direction_share']:."):
+            with self.subTest(bad=bad):
+                self.assertNotIn(bad, src)
 
 
 if __name__ == "__main__":

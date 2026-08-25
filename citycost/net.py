@@ -497,6 +497,7 @@ def cached_json(key: str, schema: str, max_age: int, produce, *,
     probe = cache_probe(key, schema, max_age, archival=archival)
     if probe["state"] == "fresh":
         _READS["cached"] += 1
+        _relocate(probe["path"], key, keep=keep)
         return probe["blob"].get("payload"), probe["age_s"], True
 
     prior_meta = {}
@@ -514,6 +515,29 @@ def cached_json(key: str, schema: str, max_age: int, produce, *,
         keep = False
     cache_write(key, schema, payload, meta=meta, keep=keep)
     return payload, 0, False
+
+
+def _relocate(path, key: str, *, keep: bool) -> None:
+    """Move an entry to the side it now belongs on, without a request.
+
+    Needed because the two axes were introduced to a cache that already had
+    files in it, and a pinned entry is served WITHOUT re-fetching — so an entry
+    written before this existed would be read as fresh forever and never
+    migrate, staying in the prunable directory permanently. Measured: after the
+    change shipped, `keep/` held one file and every ranking table the tool had
+    ever fetched was still one `cache --prune` away from deletion.
+
+    A failure here is not an error: the entry is still readable where it is,
+    and the only cost is that it remains prunable.
+    """
+    want = _cache_path(key, keep=keep)
+    if path is None or path == want:
+        return
+    try:
+        want.parent.mkdir(parents=True, exist_ok=True)
+        path.replace(want)
+    except OSError:
+        pass
 
 
 def cache_write(key: str, schema: str, payload, *, meta: dict | None = None,

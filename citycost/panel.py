@@ -11,6 +11,21 @@ from __future__ import annotations
 from . import harvest, movers, render
 
 
+def _pct(value, *, of=100) -> str:
+    """A percentage, or "unknown" — never a number standing in for one.
+
+    `movers` returns `None` for an overlap it could not compute (an empty side
+    has no denominator), which is the correct answer. Interpolating that with
+    `:.0f` raises TypeError from inside the very branch that exists to REPORT a
+    degenerate run — so the honest refusal crashed instead of printing, on
+    exactly the input it was written for. Measured end to end.
+    """
+    if value is None:
+        return "unknown"
+    return f"{value * of if of != 100 else value:.0f}%" if of == 100 \
+        else f"{value:.0%}"
+
+
 def cmd_movers(args) -> int:
     """Which cities moved most between two snapshots.
 
@@ -39,12 +54,13 @@ def cmd_movers(args) -> int:
     # Warnings BEFORE the numbers, as cmd_trend does. The table is the evidence
     # for them, and a reader who meets the evidence first has already drawn the
     # wrong conclusion from it.
+    probe = data.get("probe") or {}
     if data["drift"] == "snapshot_parameter_ignored":
         render.note(f"  ! --from {frm['snapshot']} and --to {to['snapshot']} "
                     f"returned the IDENTICAL table ({frm['rows']} rows) — and "
-                    f"so did the oldest published snapshot, "
-                    f"{data['probe']['snapshot']}. That is not a stable world; "
-                    f"that is one table fetched three times.")
+                    f"so did {probe.get('snapshot')}, the oldest published "
+                    f"snapshot that is neither side. That is not a stable "
+                    f"world; that is one table fetched three times.")
         render.note(f"    -> `?title=` is being ignored upstream. Check "
                     f"`citycost rank --snapshot {data['probe']['snapshot']} "
                     f"--top 3` against `citycost rank --top 3`; if those agree "
@@ -57,6 +73,19 @@ def cmd_movers(args) -> int:
                     f"ids are one question asked twice.")
         render.note(f"    -> pick two the source distinguishes: "
                     f"`citycost snapshots --index {args.index}`")
+    elif data["drift"] == "identical_tables_cause_unknown":
+        # A state with no note is a state the reader cannot act on. The run
+        # still refuses — the tables ARE identical and every delta is 0 — but
+        # the two causes have opposite fixes and neither was observed, so
+        # naming one would send the reader to the wrong subsystem.
+        render.note(f"  ! --from {frm['snapshot']} and --to {to['snapshot']} "
+                    f"returned the IDENTICAL table ({frm['rows']} rows), and "
+                    f"every other published id of '{args.index}' is one of "
+                    f"those two — so nothing here can tell 'these two ids name "
+                    f"one table' from '`?title=` is being ignored', and those "
+                    f"have opposite fixes.")
+        render.note(f"    -> ask a third id: "
+                    f"`citycost snapshots --index {args.index}`")
     for flag in data["partial_drift"]:
         render.note(f"  ! {flag}: '{data['column']}' shows "
                     f"{st['distinct_delta_values']} distinct delta value(s) "
@@ -64,9 +93,9 @@ def cmd_movers(args) -> int:
                     f"history over hundreds of cities produces hundreds.")
     if data["join"]["below_floor"]:
         render.note(f"  ! only {data['joined']} cities joined "
-                    f"({data['join']['overlap_pct_of_smaller']:.0f}% of the "
+                    f"({_pct(data['join']['overlap_pct_of_smaller'])} of the "
                     f"smaller table; floor "
-                    f"{data['join']['floor_pct']:.0f}%) — the place-label "
+                    f"{_pct(data['join']['floor_pct'])}) — the place-label "
                     f"format has probably changed upstream, so the key stopped "
                     f"matching and the rows below are an unrepresentative "
                     f"sample of {frm['rows']}/{to['rows']}.")
@@ -75,7 +104,7 @@ def cmd_movers(args) -> int:
                     f"but none carries '{data['column']}' in both snapshots. "
                     f"That is not 'nothing moved'.")
     if data["rebase_suspected"]:
-        render.note(f"  ! {st['same_direction_share']:.0%} of movers went the "
+        render.note(f"  ! {_pct(st['same_direction_share'], of=1)} of movers went the "
                     f"same way (median {render.signed(st['median_delta'])}) — "
                     f"that is a rebase or a redefined column, not "
                     f"{st['with_metric_in_both']} cities moving together.")
@@ -106,7 +135,7 @@ def cmd_movers(args) -> int:
     print(data["basis"])
     render.note(f"  {data['joined']} cities in both ({frm['rows']} → "
                 f"{to['rows']} rows, "
-                f"{data['join']['overlap_pct_of_smaller']:.0f}% of the "
+                f"{_pct(data['join']['overlap_pct_of_smaller'])} of the "
                 f"smaller) · {data['column']} · {data['vertical']}")
     render.age_note(frm["age_s"], f"{frm['snapshot']} · {frm['url']}")
     render.age_note(to["age_s"], f"{to['snapshot']} · {to['url']}")

@@ -32,6 +32,77 @@ has no filter, no search by budget; you must already know the city's name.
 **Nomads cannot answer "how much, itemised"** — it publishes aggregates only.
 Either alone is a half-tool.
 
+## The archive is a one-time purchase, and it was not being kept
+
+Measured 2026-08-26. The 7 verticals publish **192 historical tables**
+(cost-of-living and property carry 31 snapshots each, the other five 26).
+Fetching all of them once costs 192 paced requests and ~11 MB. Every one of
+them is a finished, published artefact.
+
+Until 1.4.0 none of that could be *kept*. Three things defeated it together,
+and any one of them alone was enough:
+
+| | |
+|---|---|
+| `rankings.fetch` applied one TTL to every snapshot | the 2009 archive expired on the same clock as `current` — one hour, as the CLI passes it |
+| `CACHE_RETENTION` was 7 days for everything | a harvest evaporated on the next prune |
+| `citycost cache` pruned with no flag | the command you run to *look* at the cache deleted part of it, and there was no read-only mode to run instead |
+
+So the status quo was not the frugal option. `citycost trend X --snapshots 31`
+issues 32 requests and discards them within the hour; three verticals explored
+across four sessions in one working day is ~364 requests for 88 distinct
+immutable objects — more, in one day, than one harvest costs for all seven
+verticals.
+
+**What is decided from the snapshot id, and what is not.** Pin eligibility is
+derived from the id by date arithmetic alone, never from `snapshots()`. That
+list sits behind a network read, which makes it precisely the input that is
+unavailable during the seven-day ban the archive exists to survive — and if its
+absence could *grant* a pin, a newly published snapshot missing from a stale
+list would be judged "older than the newest" and frozen forever. Every unknown
+degrades toward mutable instead, because the errors are not symmetric:
+under-pinning costs one request and a loud 429 carrying the server's own
+deadline, while over-pinning produces a complete, plausible, internally
+consistent table that never expires and that no later run can discover to be
+wrong.
+
+`2026-mid` is the trap the rule is coarse for. This document records it at 547
+rows against `current`'s 558, and that single reading is equally consistent
+with "frozen at publication" and "still filling". So it is not pinned, and
+neither is `2026`; the cost is two re-fetches per vertical out of 31.
+
+**And the claim is falsifiable.** Every archival read records a fingerprint of
+the table it saw. An id ever observed holding two different tables is marked
+`_moved` and permanently refused a pin, regardless of age. Without that,
+"this snapshot is immutable" is a check that cannot fail — this document's own
+disqualifier — and with it the question can actually be closed by observation
+rather than by assumption, at no extra request.
+
+## Rate limiting decides who may run a sweep, not just how fast
+
+`citycost harvest --execute` was run here on 2026-08-26 and **refused at item 1
+of 177**:
+
+```
+a request was rerouted through the external fetcher — harvest stopped at item 1 of 177
+  -> the reroute is a repair, not a licence to sweep harder.
+     Run the harvest from a network that is not blocked
+```
+
+That is this document's own position enforcing in code. The reroute exists so
+that an *ordinary read* survives a block; routing a 192-request sweep through a
+borrowed VPS or a paid residential exit removes the only feedback signal that
+the volume was wrong, and it spends somebody's bandwidth to do it. The plan
+(`citycost harvest`, no flags) costs zero requests and is safe at any time; the
+sweep needs an address the source has not banned.
+
+The alternative that looks most conservative — a documented shell loop over
+`citycost rank --snapshot <id>` — is the worst of the three options, because
+`net._last_hit` is per **process**: 192 separate invocations reset the 1.1s
+throttle 192 times and hammer at full speed, with no plan, no abort on the
+first 429 and no lock. That is closer to the six-concurrent-agent load that
+earned the seven-day ban than the harvest is.
+
 ## Efficiency: pick the channel by the *shape* of the question
 
 Measured request costs:
@@ -42,6 +113,8 @@ Measured request costs:
 | "one city, itemised" | rankings page (indices only, no prices) | 1 city-page fetch | — |
 | "one city over 17 years" | — | 31 rankings fetches, cached | — |
 | "cities under $1200 in Asia" | crawl every Numbeo city | 1 MCP call | ~500× |
+| "which cities moved most, 2019 → now" | 2 × 558 city-page fetches | 2 rankings fetches + a join | **558×** |
+| the same question, asked again next week | 2 more rankings fetches | 1 (the 2019 side is pinned) | **2×** |
 
 The rule: **the rankings pages are built to be read whole; the MCP endpoint
 says of itself "this is not a bulk data source".** Honour both. A sweep that
@@ -291,6 +364,13 @@ the fallback path serves the same units the direct path would have.
   exits non-zero saying so. Table size is what makes that safe to assert —
   a genuinely unchanging city still sits in tables of different sizes, because
   the snapshots are not monotonic (2022 carried 578 cities, 2026-mid 547).
+- **Whether the 192-table archive is internally consistent** is unanswered
+  here, because the harvest has not been executed: this address is banned until
+  2026-09-01 and the harvest correctly refuses the reroute. What exists is the
+  plan (192 targets, 15 already cached, 177 to fetch, 178 of them pinnable),
+  verified at zero requests, and the observers that would grade the result —
+  a cross-snapshot fingerprint collision means one table was fetched twice
+  under two archival names. Both remain unrun against a full corpus.
 - nomads → Numbeo slug mapping is a **guess the caller verifies by fetching**,
   because neither site publishes a mapping. A hardcoded table would be wrong
   for every city nobody has hit yet.
