@@ -79,9 +79,16 @@ answers* rather than crashes. So the strategy is not "be careful", it is
 
 ## Rate limiting — measured, not assumed
 
-**Numbeo returns HTTP 429.** Measured 2026-08-25: six concurrent agents reading
-numbeo.com earned a 429 within roughly two minutes, and it persisted through at
-least the next few minutes on a single probe. This is the most important
+**Numbeo returns HTTP 429, and the block is long-lived.** Measured 2026-08-25:
+six concurrent agents reading numbeo.com earned a 429 within roughly two
+minutes. The concurrent readers were then stopped, and a single probe from the
+same IP was **still 429 thirty minutes later**. nomads.com blocked at the same
+time and states its budget in the 429 body: `Rate limited: 60 requests/hour per
+IP`.
+
+Thirty minutes is the measured floor, not the recovery time — the block had not
+lifted when measurement ended, so the true duration is **unknown and longer**.
+Plan on it being expensive rather than transient. This is the most important
 operational fact about the source, and it decides three things in the client:
 
 1. **A per-host minimum interval** (`net.MIN_INTERVAL`, 1.1s for numbeo.com,
