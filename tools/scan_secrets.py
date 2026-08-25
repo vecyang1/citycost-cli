@@ -8,9 +8,18 @@ accumulate credential-shaped strings.
 """
 import re, subprocess, sys, pathlib
 
-files = subprocess.run(
+if len(sys.argv) < 2:
+    # An IndexError traceback reads as a broken scanner, which is the one
+    # diagnosis that makes a person skip the check rather than fix the call.
+    print("usage: scan_secrets.py <repo-root>\n"
+          "       e.g.  python tools/scan_secrets.py .", file=sys.stderr)
+    sys.exit(2)
+
+ROOT = pathlib.Path(sys.argv[1])
+listing = subprocess.run(
     ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-    capture_output=True, text=True, cwd=sys.argv[1]).stdout.split()
+    capture_output=True, text=True, cwd=ROOT)
+files = listing.stdout.split()
 
 PATTERNS = {
     "aws-key":        re.compile("AKIA" + r"[0-9A-Z]{16}"),
@@ -43,7 +52,7 @@ PATTERNS = {
 }
 hits, graded = {}, 0
 for rel in files:
-    fp = pathlib.Path(sys.argv[1]) / rel
+    fp = ROOT / rel
     if not fp.is_file() or fp.stat().st_size > 3_000_000:
         continue
     try:
@@ -56,6 +65,21 @@ for rel in files:
         if n:
             hits.setdefault(name, []).append((rel, n))
 print(f"graded {graded} files that git would accept")
+if graded == 0:
+    # A scan that examined nothing is INCONCLUSIVE, not clean — and this is the
+    # one failure the green tick hides completely, because the output is
+    # otherwise identical to a healthy run. Reached whenever the path is not a
+    # repository, the checkout is empty, or `git` is unavailable: measured
+    # 2026-08-25, pointing this scanner at an ordinary directory printed
+    # "CLEAN — no credential-shaped strings" and exited 0.
+    print("INCONCLUSIVE — examined no files, so this is not a clean verdict",
+          file=sys.stderr)
+    if listing.returncode != 0:
+        print(f"  git said: {listing.stderr.strip().splitlines()[0]}"
+              if listing.stderr.strip() else "  git produced no file list",
+              file=sys.stderr)
+    print(f"  is {ROOT} a git repository?", file=sys.stderr)
+    sys.exit(2)
 if not hits:
     print("CLEAN — no credential-shaped strings")
     sys.exit(0)

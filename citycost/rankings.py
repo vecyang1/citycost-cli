@@ -41,6 +41,14 @@ SNAPSHOT_ID = re.compile(r"\d{4}(-mid)?")
 #: with both stories.
 PUBLICATION_CYCLE_DAYS = 180
 
+#: Numbeo's oldest published snapshot, measured 2026-08-25 (cost-of-living and
+#: property both start here). The upper bound on pinning is a date rule; this
+#: is the lower one, and it exists because an id Numbeo never published is not
+#: refused — an unrecognised `?title=` is answered with the CURRENT table.
+#: Without this, `rank --snapshot 1999` would pin today's moving table forever
+#: under an archival name.
+EARLIEST_SNAPSHOT_YEAR = 2009
+
 #: vertical -> URL path segment. The key is what a user types.
 VERTICALS = {
     "cost-of-living": "cost-of-living",
@@ -213,6 +221,8 @@ def is_archival(snapshot: str | None, *, now: float | None = None,
         year = int(str(snapshot)[:4])
     except ValueError:
         return False
+    if year < EARLIEST_SNAPSHOT_YEAR:
+        return False
     ended = _dt.datetime(year + 1, 1, 1, tzinfo=_dt.timezone.utc).timestamp()
     return (now if now is not None else time.time()) >= (
         ended + PUBLICATION_CYCLE_DAYS * 86400)
@@ -230,6 +240,11 @@ def panel_fingerprint(table: dict) -> str:
     """
     rows = (table or {}).get("rows") or []
     h = hashlib.sha256()
+    # A table with no rows is not a table this can speak about: two empty
+    # parses would otherwise fingerprint identically, and every consumer of
+    # this digest reads "identical" as evidence of one specific upstream fault.
+    if not rows:
+        return ""
     h.update(str(len(rows)).encode())
     for r in rows:
         h.update(_json.dumps(
@@ -300,7 +315,12 @@ def snapshots(vertical: str = "cost-of-living", *, max_age: int = 86400) -> list
         # values that look like a Numbeo snapshot id.
         return [o for o in opts if SNAPSHOT_ID.fullmatch(o)]
 
-    payload, _, _ = cached_json(f"snapshots:{url}", SCHEMA, max_age, produce)
+    # `keep=True` without `archival`: the list is genuinely re-published, so it
+    # expires on a clock — but it is also the only offline owner of "which
+    # snapshots exist", so pruning it makes every pinned page unenumerable
+    # during exactly the ban that made pinning worth doing.
+    payload, _, _ = cached_json(f"snapshots:{url}", SCHEMA, max_age, produce,
+                                keep=True)
     return list(payload or [])
 
 

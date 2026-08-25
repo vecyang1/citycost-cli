@@ -16,6 +16,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 
 from . import _sandbox  # noqa: F401
@@ -82,6 +83,32 @@ class TestScannerEndToEnd(unittest.TestCase):
         m = re.search(r"graded (\d+) files", r.stdout)
         self.assertIsNotNone(m, r.stdout)
         self.assertGreater(int(m.group(1)), 20)
+
+    def test_zero_files_is_inconclusive_not_clean(self):
+        """The rule the docstring above states, actually enforced.
+
+        Asserting `graded > 20` on the real repo proves the counter works; it
+        proves nothing about what the scanner DOES when the count is zero, and
+        that is the one failure a green tick hides completely — the output is
+        otherwise identical to a healthy run. Measured 2026-08-25: pointed at
+        an ordinary directory, this scanner printed `CLEAN` and exited 0.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            r = subprocess.run([sys.executable, str(SCANNER), d],
+                               capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("CLEAN", r.stdout)
+        self.assertIn("INCONCLUSIVE", r.stderr)
+
+    def test_no_argument_is_a_usage_error_not_a_traceback(self):
+        """A message that names a command must be a command that parses; a
+        traceback names none, and reads as a broken tool rather than a wrong
+        call."""
+        r = subprocess.run([sys.executable, str(SCANNER)],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("usage:", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_it_never_prints_a_matching_line(self):
         """`grep -n` on a secret pattern is how a defensive sweep becomes the

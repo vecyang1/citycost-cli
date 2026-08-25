@@ -162,7 +162,7 @@ class TestArchivalCacheBehaviour(unittest.TestCase):
         self.assertTrue(ordinary.exists())
         net.cached_json(self.key, "v1", 0, lambda: {"a": 2}, archival=True)
         self.assertFalse(ordinary.exists())
-        self.assertTrue(net._cache_path(self.key, archival=True).exists())
+        self.assertTrue(net._cache_path(self.key, keep=True).exists())
 
 
 class TestRetentionSparesTheArchive(unittest.TestCase):
@@ -187,7 +187,7 @@ class TestRetentionSparesTheArchive(unittest.TestCase):
 
     def test_prune_spares_the_expired_pinned_entry(self):
         net.prune_cache()
-        self.assertTrue(net._cache_path(self.pinned, archival=True).exists())
+        self.assertTrue(net._cache_path(self.pinned, keep=True).exists())
 
     def test_prune_reports_its_own_denominator(self):
         """`pruned 0 expired cache files` was the same sentence for a clean
@@ -210,12 +210,12 @@ class TestRetentionSparesTheArchive(unittest.TestCase):
 
     def test_clear_spares_the_archive_unless_it_is_named(self):
         res = net.clear_cache()
-        self.assertTrue(net._cache_path(self.pinned, archival=True).exists())
+        self.assertTrue(net._cache_path(self.pinned, keep=True).exists())
         self.assertGreaterEqual(res["protected"], 1)
 
     def test_clear_include_archive_does_remove_it(self):
         net.clear_cache(include_archive=True)
-        self.assertFalse(net._cache_path(self.pinned, archival=True).exists())
+        self.assertFalse(net._cache_path(self.pinned, keep=True).exists())
 
 
 class TestCacheProbe(unittest.TestCase):
@@ -295,14 +295,14 @@ class TestFetchRecordsTheFalsifyingObservation(unittest.TestCase):
             first = rankings.fetch("cost-of-living", snapshot="2019")
             self.assertTrue(first["_archival"])
             key = f"rank:{rankings._url('cost-of-living', 'city', '2019', None)}"
-            self.assertTrue(net._cache_path(key, archival=True).exists())
+            self.assertTrue(net._cache_path(key, keep=True).exists())
             # Force a live re-read; the content has changed underneath us.
             rankings.fetch("cost-of-living", snapshot="2019", max_age=0)
 
         blob = json.loads(net._existing_path(key).read_text(encoding="utf-8"))
         self.assertTrue(blob["_meta"]["moved"])
         # ...and having moved, it is no longer stored as an archive.
-        self.assertFalse(net._cache_path(key, archival=True).exists())
+        self.assertFalse(net._cache_path(key, keep=True).exists())
         self.assertTrue(net._cache_path(key).exists())
 
 

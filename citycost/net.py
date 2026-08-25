@@ -386,11 +386,11 @@ def _http_post_json_once(url: str, payload: dict, *,
 ARCHIVE_DIR = "keep"
 
 
-def _cache_path(key: str, *, archival: bool = False) -> Path:
+def _cache_path(key: str, *, keep: bool = False) -> Path:
     import hashlib
     safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in key)[:80]
     digest = hashlib.sha256(key.encode()).hexdigest()[:10]
-    base = cache_dir() / ARCHIVE_DIR if archival else cache_dir()
+    base = cache_dir() / ARCHIVE_DIR if keep else cache_dir()
     return base / f"{safe}.{digest}.json"
 
 
@@ -398,8 +398,8 @@ def _existing_path(key: str) -> Path | None:
     """Wherever the entry actually is. An entry can migrate between the two
     directories when its snapshot ages past the pin threshold, so a reader
     that looked in only one would report `absent` for a file it owns."""
-    for archival in (True, False):
-        p = _cache_path(key, archival=archival)
+    for keep in (True, False):
+        p = _cache_path(key, keep=keep)
         if p.exists():
             return p
     return None
@@ -455,6 +455,15 @@ def cache_probe(key: str, schema: str, max_age: int, *,
     if not isinstance(blob, dict) or blob.get("_schema") != schema:
         return {"state": "schema_mismatch", "age_s": age, "path": path,
                 "blob": blob if isinstance(blob, dict) else None}
+    if archival and (blob.get("_meta") or {}).get("moved"):
+        # An OBSERVATION overrules a caller's claim. The caller derives
+        # `archival` from the id; this file records that the id was seen
+        # holding two different tables, which disproves the claim the id was
+        # making. Honoured here rather than at the caller because a rule
+        # enforced in one of two readers is enforced in neither: the veto used
+        # to survive exactly one write and then evaporate, since nothing on the
+        # read path ever looked at it again.
+        archival = False
     if max_age <= 0:
         return {"state": "stale", "age_s": age, "path": path, "blob": blob}
     if archival or age < max_age:
@@ -463,17 +472,24 @@ def cache_probe(key: str, schema: str, max_age: int, *,
 
 
 def cached_json(key: str, schema: str, max_age: int, produce, *,
-                archival: bool = False, meta_hook=None):
+                archival: bool = False, keep: bool | None = None,
+                meta_hook=None):
     """Return `(payload, age_seconds, from_cache)`.
 
     `produce()` is only called when `cache_probe` says the cache cannot answer.
     The age travels with the payload so a caller can print it — a figure whose
     age is unstated is a figure that will be read as current.
 
-    `archival=True` exempts the entry from the age clock and writes it where
-    `prune_cache` will not remove it. The caller decides that, because only the
-    caller knows whether the thing it fetched is a published artefact or a
-    moving one; `net` deliberately holds no opinion about snapshot ids.
+    Two axes, deliberately separate, because a payload can want one without the
+    other. `archival=True` exempts the entry from the AGE CLOCK — may I serve
+    this without asking? `keep=True` puts it where `prune_cache` will not
+    remove it — may I delete this file? They default together because that is
+    the common case, and they must be separable because the snapshot LIST is
+    the case where they disagree: it is genuinely re-published (so it expires
+    on a clock) and it is the only offline owner of the archive's denominator
+    (so deleting it makes 192 pinned pages unenumerable, during exactly the ban
+    that made them worth pinning). One flag setting both is the fusion this
+    change exists to undo.
 
     `meta_hook(payload, prior_meta) -> dict` runs only on a live read, so a
     caller can record a fact about the *transition* — did a table we called
@@ -483,6 +499,8 @@ def cached_json(key: str, schema: str, max_age: int, produce, *,
     different contents has disproved its own immutability, and no age rule may
     overrule an observation.
     """
+    if keep is None:
+        keep = archival
     probe = cache_probe(key, schema, max_age, archival=archival)
     if probe["state"] == "fresh":
         _READS["cached"] += 1
@@ -500,18 +518,27 @@ def cached_json(key: str, schema: str, max_age: int, produce, *,
     if meta_hook is not None:
         meta = meta_hook(payload, prior_meta) or {}
     if meta.get("moved"):
-        archival = False
-    cache_write(key, schema, payload, meta=meta, archival=archival)
+        keep = False
+    cache_write(key, schema, payload, meta=meta, keep=keep)
     return payload, 0, False
 
 
 def cache_write(key: str, schema: str, payload, *, meta: dict | None = None,
-                archival: bool = False) -> None:
-    """The one writer. Records `_fetched_at` because mtime is not a fact about
-    the read: a corpus copied between machines or restored from backup arrives
-    with every mtime set to today, so a 300-day-old figure reports `age 0s`."""
+                keep: bool = False) -> bool:
+    """The one writer. Returns whether the write landed.
+
+    Records `_fetched_at` because mtime is not a fact about the read: a corpus
+    copied between machines or restored from backup arrives with every mtime
+    set to today, so a 300-day-old figure reports `age 0s`.
+
+    Swallowing the error is right for an ordinary read — an unwritable cache
+    must not fail a read that already succeeded — and wrong for a caller whose
+    entire product IS the write. A read-only home directory or a full disk
+    would otherwise let a 192-request harvest report success having stored
+    nothing, so the outcome is returned rather than only logged.
+    """
     try:
-        target = _cache_path(key, archival=archival)
+        target = _cache_path(key, keep=keep)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps({"_schema": schema, "_fetched_at": int(time.time()),
@@ -520,21 +547,22 @@ def cache_write(key: str, schema: str, payload, *, meta: dict | None = None,
         # An entry that changed side must not be left behind in the other
         # directory: two copies of one key is two answers to one question, and
         # the stale one wins whenever it is the first found.
-        other = _cache_path(key, archival=not archival)
+        other = _cache_path(key, keep=not keep)
         if other.exists():
             other.unlink()
+        return True
     except OSError:
-        pass  # an unwritable cache must not fail a read that already succeeded
+        return False
 
 
-def cache_entries(*, archival: bool | None = None) -> list[Path]:
+def cache_entries(*, keep: bool | None = None) -> list[Path]:
     """Every cache file, optionally only one side. Non-recursive on purpose per
     directory, so the two sets stay disjoint and countable."""
     d = cache_dir()
     out = []
-    if archival in (None, False) and d.exists():
+    if keep in (None, False) and d.exists():
         out += sorted(d.glob("*.json"))
-    if archival in (None, True) and (d / ARCHIVE_DIR).exists():
+    if keep in (None, True) and (d / ARCHIVE_DIR).exists():
         out += sorted((d / ARCHIVE_DIR).glob("*.json"))
     return out
 
@@ -552,10 +580,10 @@ def cache_status() -> dict:
     now = time.time()
     out = {"dir": str(cache_dir()), "ordinary": 0, "archived": 0, "bytes": 0,
            "unreadable": 0, "mtime_skew": 0, "oldest_fetch_s": None,
-           "schemas": {}}
-    for archival in (False, True):
-        for f in cache_entries(archival=archival):
-            out["archived" if archival else "ordinary"] += 1
+           "legacy": 0, "schemas": {}}
+    for keep in (False, True):
+        for f in cache_entries(keep=keep):
+            out["archived" if keep else "ordinary"] += 1
             try:
                 out["bytes"] += f.stat().st_size
                 blob = json.loads(f.read_text(encoding="utf-8"))
@@ -568,6 +596,11 @@ def cache_status() -> dict:
             sch = blob.get("_schema") or "?"
             out["schemas"][sch] = out["schemas"].get(sch, 0) + 1
             fetched = blob.get("_fetched_at")
+            if not isinstance(fetched, (int, float)):
+                # Written before this field existed. Counted, because every
+                # observer that reads `_fetched_at` is SILENT about these, and
+                # silence reads as a clean bill.
+                out["legacy"] += 1
             if isinstance(fetched, (int, float)):
                 age = int(now - fetched)
                 if out["oldest_fetch_s"] is None or age > out["oldest_fetch_s"]:
@@ -599,7 +632,7 @@ def prune_cache(retention: int = CACHE_RETENTION) -> dict:
         except OSError:
             pass
     return {"scanned": scanned, "removed": removed,
-            "protected": len(cache_entries(archival=True)), "dir": str(d)}
+            "protected": len(cache_entries(keep=True)), "dir": str(d)}
 
 
 def clear_cache(*, include_archive: bool = False) -> dict:
@@ -617,7 +650,7 @@ def clear_cache(*, include_archive: bool = False) -> dict:
             n += 1
         except OSError:
             pass
-    for f in cache_entries(archival=True):
+    for f in cache_entries(keep=True):
         if include_archive:
             try:
                 f.unlink()
