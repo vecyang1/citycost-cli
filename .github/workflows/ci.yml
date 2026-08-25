@@ -16,8 +16,14 @@ jobs:
       # or a green CI would mean "the site answered", not "the code is right".
       - name: Secret scan (verdict only — never prints a matching line)
         run: python tools/scan_secrets.py .
-      - name: Unit tests (no network)
-        run: python -m unittest discover -s tests -v
+      # Both invocations, because they are not the same check. `-s tests`
+      # without `-t .` cannot resolve the suite's relative imports and reports
+      # "Ran 7 tests / errors=7" against a suite of 111 — a broken import
+      # wearing the shape of a small suite. Running both means neither can rot.
+      - name: Unit tests (no network) — from the repo root
+        run: python -m unittest discover -t . -s tests -v
+      - name: Unit tests (no network) — top-level discovery
+        run: python -m unittest discover -s . -p 'test_*.py' 
       - name: Packaging — build, install clean, run from outside the tree
         run: |
           python -m pip install --quiet build

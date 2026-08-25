@@ -139,8 +139,6 @@ class TestTrendPreservesAbsence(unittest.TestCase):
         self.assertEqual((s["rank"], s["of"]), (1, 3))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 HOMONYM_HTML = """
@@ -216,3 +214,7 @@ class TestBrTagInHeader(unittest.TestCase):
         from citycost.htmlparse import find_table
         tbl = find_table(HOMONYM_HTML, table_id="t2")
         self.assertEqual(tbl.column_index("Health Care Exp. Index"), 2)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
