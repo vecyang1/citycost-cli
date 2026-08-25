@@ -86,10 +86,12 @@ same IP was **still 429 thirty minutes later**. nomads.com blocked at the same
 time and states its budget in the 429 body: `Rate limited: 60 requests/hour per
 IP`.
 
-Thirty minutes is the measured floor, not the recovery time — the block had not
-lifted when measurement ended, so the true duration is **unknown and longer**.
-Plan on it being expensive rather than transient. This is the most important
-operational fact about the source, and it decides three things in the client:
+**Re-measured the same day.** The concurrent readers stopped at ~09:25 +0700;
+a single direct probe at **10:39 was still 429** — over an hour — and was still
+refused when measurement ended. So the floor is at least an hour and the true
+duration remains **unknown and longer**. Treat the block as expensive, not
+transient. This is the most important operational fact about the source, and it
+decides four things in the client:
 
 1. **A per-host minimum interval** (`net.MIN_INTERVAL`, 1.1s for numbeo.com,
    1.5s for nomads.com). Per-process and per-host, so an interactive run never
@@ -102,17 +104,59 @@ operational fact about the source, and it decides three things in the client:
 3. **The cache is the real defence.** Widening `--max-age` converts a sweep
    into zero requests. This is why every payload carries its age.
 
-**Residential-proxy rotation was considered and rejected as a default.** A
-rotating residential IP pool routes around this trivially, but: it costs money
-per GB, it is a poor citizen on a site whose `robots.txt` permits ordinary
-reading, and — the deciding reason — it *hides the signal* that a sweep is too
-aggressive instead of fixing it.
+4. **An automatic reroute, when — and only when — the user has named a
+   fetcher.** Revised 2026-08-25 after the measurement above. The earlier
+   position was that a proxy fallback must stay manual, on three arguments:
+   cost, citizenship, and that it hides the signal that a sweep is too
+   aggressive. The measurement retired the first two and the design answers
+   the third:
 
-It stays reachable through `CITYCOST_FETCH_CMD`, which takes any external
-fetcher and is never enabled by default. That indirection is also why this
-repository holds no proxy code and no credentials: the escape hatch is a
-contract (`{url}` in, body on stdout, exit 0 on success), so whatever the user
-plugs in stays entirely theirs.
+   - *Cost* — the fetcher is only ever reached **after** a free direct attempt
+     was made and refused, so an unblocked run spends nothing. `always` exists
+     for the case where you already know, and must be asked for.
+   - *Citizenship* — a block that outlives its cause by more than an hour is
+     not a request to slow down that a client can honour by slowing down. The
+     paced, cached, never-retried direct path is still what every run tries
+     first; rerouting is what happens when that has already been refused.
+   - *The hidden signal* — is the real objection, and it is fixed by making it
+     loud rather than by refusing to act. Every reroute prints to stderr, the
+     run ends with a provenance count, and `--json` consumers can read the
+     events. A **404 never reroutes**: a wrong slug through a residential proxy
+     is the same wrong slug, bought.
+
+**The client still ships no proxy.** `CITYCOST_FETCH_CMD` / `CITYCOST_POST_CMD`
+name an external command: `{url}` in, request body on stdin for POST, response
+body on stdout, exit 0 only on 2xx. That contract is why this repository holds
+no proxy code and no credentials — whatever the user plugs in stays entirely
+theirs, and a public repository cannot leak what it never held.
+
+### Measurement systems, re-measured through three exits
+
+Numbeo picks imperial or metric from the **client IP**, and this was confirmed
+again on 2026-08-25 by fetching one city (Da Nang) through three exits within
+the same minute:
+
+| exit | rows | rendering |
+|---|---|---|
+| US (Los Angeles) | 55 | `915 Square Feet`, `per Square Feet`, `Taxi 1 mile`, `1 lb` |
+| Vietnam | 55 | `85 m2`, `per Square Meter`, `Taxi 1 km`, `1 kg` |
+| Singapore | 55 | metric, as Vietnam |
+
+Same 55 rows, same prices, four labels different. That pair of readings is also
+a free correctness check on the conversion itself: `$354.72/sq ft × 10.7639 =
+$3,818` against the metric page's `$3,818.15/m²`, and `$1.01/mile ÷ 1.60934 =
+$0.63` against its `$0.63/km`. The factors are right, verified against the
+source rather than against a constant table.
+
+It also exposed a bug that a single rendering **cannot** show you: `TARGETS`
+spelled the taxi row `Taxi 1km`, which is a prefix of nothing Numbeo serves, so
+that row had never once been read on a metric page — i.e. never, from here. The
+client warned honestly on every run and the warning was read as upstream drift.
+`tests/test_units.py` now asserts the two renderings yield an **identical key
+set**, which is the assertion that fails rather than shrugs.
+
+The configured fetcher therefore requests a **metric exit** on this machine, so
+the fallback path serves the same units the direct path would have.
 
 ## Sources evaluated and rejected (all probed live, 2026-08-25)
 

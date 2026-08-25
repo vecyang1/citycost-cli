@@ -10,5 +10,5 @@ Numbeo's Data API costs $260/month with no free tier. The same figures are
 served as public HTML, and that is what this reads.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["__version__"]

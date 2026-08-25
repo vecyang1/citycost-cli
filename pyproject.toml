@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citycost"
-version = "1.0.0"
+# Single-sourced from citycost/__init__.py. Two literals for one version
+# agree on the day they are written and disagree on every day after: the CLI
+# printed 1.1.0 while the wheel it came from said 1.0.0.
+dynamic = ["version"]
 description = "City cost-of-living intelligence from free public sources — discover, verify, rank, and cross-check."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,3 +33,6 @@ citycost = "citycost.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["citycost*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "citycost.__version__"}

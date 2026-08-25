@@ -24,24 +24,61 @@ class TestDecoding(unittest.TestCase):
 
 
 class TestRetryPolicy(unittest.TestCase):
+    """Driven through the real raise site, not through hand-made exceptions.
+
+    These tests used to build a `SourceUnavailable` whose *message* contained
+    "HTTP 429" — which passed for as long as the retry decision was a substring
+    search, and would have kept passing after the decision moved to a status
+    field while the production path quietly retried every rate limit. A test
+    that constructs the error itself is testing its own fixture; letting
+    `urlopen` raise a real `HTTPError` tests the client.
+    """
+
+    @staticmethod
+    def _http_error(code):
+        import urllib.error
+        return urllib.error.HTTPError("http://t/", code, "no", {}, None)
+
+    def _count_attempts(self, code):
+        calls = []
+
+        def boom(*a, **k):
+            calls.append(1)
+            raise self._http_error(code)
+
+        with mock.patch.object(net.urllib.request, "urlopen", boom):
+            with mock.patch.object(net.time, "sleep"):
+                with self.assertRaises(SourceUnavailable) as ctx:
+                    net.http_get("http://t/")
+        return len(calls), ctx.exception
+
     def test_a_rate_limit_is_never_retried(self):
         """Retrying a 429 is what makes a rate limit worse."""
-        calls = []
-
-        def boom():
-            calls.append(1)
-            raise SourceUnavailable("x rate-limited (HTTP 429)", "wait")
-
-        with self.assertRaises(SourceUnavailable):
-            net._with_retry(boom, what="t")
-        self.assertEqual(len(calls), 1)
+        n, exc = self._count_attempts(429)
+        self.assertEqual(n, 1)
+        self.assertEqual(exc.status, 429)
 
     def test_a_4xx_is_never_retried(self):
+        n, exc = self._count_attempts(404)
+        self.assertEqual(n, 1)
+        self.assertEqual(exc.status, 404)
+
+    def test_a_5xx_is_still_retried(self):
+        """The other direction: a 500 is a blip and giving up on the first one
+        reports 'unreachable' about a site that is up."""
+        n, exc = self._count_attempts(500)
+        self.assertEqual(n, net.RETRIES)
+        self.assertEqual(exc.status, 500)
+
+    def test_the_retry_decision_survives_a_reworded_message(self):
+        """The regression guard for the substring era: an error whose prose
+        says nothing about a status must still be refused on its number."""
+        exc = SourceUnavailable("the sky is falling", "", status=429)
         calls = []
 
         def boom():
             calls.append(1)
-            raise SourceUnavailable("x returned HTTP 404", "check the URL")
+            raise exc
 
         with self.assertRaises(SourceUnavailable):
             net._with_retry(boom, what="t")

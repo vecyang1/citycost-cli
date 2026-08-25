@@ -19,3 +19,18 @@ os.environ["CITYCOST_CACHE_DIR"] = SANDBOX
 # default is the developer's real cache.
 for _var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
     os.environ.pop(_var, None)
+
+# The transport fallback is both at once, and the danger runs in one direction
+# only. `CITYCOST_CONFIG` is a *location*: unset means "use the default", and
+# the default is the developer's real fetch.conf, which names a real proxy that
+# costs real money — so it is pointed at a path inside the sandbox that does
+# not exist, which is the "nothing configured" state every test should start
+# from. The three command variables are *switches*: an exported one would send
+# a unit test through a live proxy, so they are removed outright.
+#
+# Added when the fallback landed, in the same change, not after it. The window
+# between a new resolution path and its isolation is precisely when a suite
+# runs against live data, and it leaves no failing test behind to say so.
+os.environ["CITYCOST_CONFIG"] = os.path.join(SANDBOX, "fetch.conf")
+for _var in ("CITYCOST_FETCH_CMD", "CITYCOST_POST_CMD", "CITYCOST_FETCH_MODE"):
+    os.environ.pop(_var, None)

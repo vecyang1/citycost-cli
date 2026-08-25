@@ -65,12 +65,31 @@ class TestCompareOutput(unittest.TestCase):
         _, out, _ = run(["compare", "Da-Nang", "--md", "--max-age", "0"])
         self.assertIn("|---", out)
 
-    def test_an_unknown_slug_exits_zero_but_says_so_on_stderr(self):
-        """A sweep must not abort because one of ten names was mistyped."""
+    def test_one_bad_name_among_several_does_not_abort_the_sweep(self):
+        """A sweep must not abort because one of ten names was mistyped.
+
+        This test used to pass a single city and assert exit 0, which is a
+        narrower subject than its own sentence: with one name and that name
+        wrong, *nothing* was read, and exiting 0 hands a `--json` consumer a
+        payload of nulls under a success code. One good name is now in the
+        fixture, so the claim and the subject match.
+        """
+        pages = {"Da-Nang": PAGE, "Xx": "<html>Cannot find city id</html>"}
+        with mock.patch.object(
+                prices, "http_get",
+                side_effect=lambda url, **kw: next(
+                    v for k, v in pages.items() if f"/{k}" in url)):
+            code, out, err = run(["compare", "Da-Nang", "Xx", "--json",
+                                  "--max-age", "0"])
+        self.assertEqual(code, 0)
+        errors = [r.get("error") for r in json.loads(out)]
+        self.assertIn("Cannot find", err + " ".join(e or "" for e in errors))
+
+    def test_the_only_name_being_wrong_is_a_failed_run(self):
         with mock.patch.object(prices, "http_get",
                                return_value="<html>Cannot find city id</html>"):
             code, out, err = run(["compare", "Xx", "--json", "--max-age", "0"])
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertIn("Cannot find", err + json.loads(out)[0]["error"])
 
 
@@ -113,6 +132,36 @@ class TestExitCodes(unittest.TestCase):
             code, _, err = run(["rank", "--max-age", "0"])
         self.assertEqual(code, 2)
         self.assertIn("wait", err)
+
+
+class CompareExitStatus(unittest.TestCase):
+    """A run where nothing could be read must not exit 0.
+
+    The failure it prevents is quiet: a blocked source produces a complete,
+    well-shaped `--json` payload full of nulls, and a caller that checks only
+    the exit code records "these cities are unpriced" for cities that are in
+    fact perfectly well priced.
+    """
+
+    def _run(self, records):
+        with mock.patch.object(cli.prices, "try_fetch",
+                               side_effect=lambda slug, **kw: records[slug]):
+            with mock.patch.object(cli.render, "note"):
+                with mock.patch("sys.stdout", io.StringIO()):
+                    return cli.main(["compare", *records, "--json"])
+
+    def test_every_city_failing_exits_nonzero(self):
+        self.assertEqual(self._run({
+            "Hanoi": {"slug": "Hanoi", "error": "rate-limited", "remedy": "x"},
+            "Da-Nang": {"slug": "Da-Nang", "error": "rate-limited", "remedy": "x"},
+        }), 1)
+
+    def test_one_city_failing_among_several_still_exits_zero(self):
+        self.assertEqual(self._run({
+            "Hanoi": {"slug": "Hanoi", "values": {"cheap_meal": 2.0},
+                      "country": "Vietnam", "currency": "USD"},
+            "Nowhere": {"slug": "Nowhere", "error": "no such slug", "remedy": "x"},
+        }), 0)
 
 
 if __name__ == "__main__":

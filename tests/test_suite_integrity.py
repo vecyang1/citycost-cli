@@ -12,6 +12,7 @@ count.
 """
 
 import pathlib
+import re
 import unittest
 
 from . import _sandbox  # noqa: F401
@@ -21,7 +22,7 @@ REPO = TESTS_DIR.parent
 
 #: Raise deliberately when adding tests. A count that only ever moves down
 #: without anyone noticing is the failure this file exists to prevent.
-MIN_TESTS = 125
+MIN_TESTS = 168
 
 
 class TestSuiteIntegrity(unittest.TestCase):
@@ -99,6 +100,34 @@ def _flatten(suite):
             yield from _flatten(item)
         else:
             yield item
+
+
+class RepoIntegrity(unittest.TestCase):
+    """Predicates about the repository that are decidable, so they are tests
+    rather than paragraphs somebody has to remember."""
+
+    def test_the_version_has_exactly_one_owner(self):
+        """`__version__` said 1.1.0 while pyproject said 1.0.0, so `pipx
+        install .` produced a wheel labelled with the older number and the CLI
+        it installed disagreed with it. Two literals for one fact agree on the
+        day they are written."""
+        text = (pathlib.Path(__file__).resolve().parents[1]
+                / "pyproject.toml").read_text(encoding="utf-8")
+        # Scoped to [project]: `[tool.setuptools.dynamic]` legitimately holds a
+        # line starting `version =`, and a regex over the whole file matches it
+        # and fails on the correct configuration. tomllib would be cleaner and
+        # is 3.11+, while this suite still runs on 3.10.
+        block, inside = [], False
+        for line in text.splitlines():
+            if line.strip().startswith("["):
+                inside = line.strip() == "[project]"
+                continue
+            if inside:
+                block.append(line)
+        project = "\n".join(block)
+        self.assertIn('dynamic = ["version"]', project)
+        self.assertIsNone(re.search(r"(?m)^version\s*=", project),
+                          "[project] declares a literal version again")
 
 
 if __name__ == "__main__":

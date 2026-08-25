@@ -5,6 +5,8 @@ changed" send a reader to three different places. Collapsing them into one
 string is how a user spends an afternoon on the wrong problem.
 """
 
+from __future__ import annotations
+
 
 class CitycostError(Exception):
     """Base. Carries a remedy the caller can act on, not just a diagnosis."""
@@ -35,4 +37,15 @@ class LayoutChanged(CitycostError):
 
 
 class SourceUnavailable(CitycostError):
-    """Network, HTTP status, or an upstream rate limit."""
+    """Network, HTTP status, or an upstream rate limit.
+
+    Carries the HTTP `status` when there was one, so callers decide on a number
+    rather than by searching this class's own message for "429". A message is
+    prose that gets reworded; a status is a fact. Keying the fallback on the
+    prose is how a reworded sentence silently turns a working escape hatch off.
+    """
+
+    def __init__(self, message: str, remedy: str = "",
+                 status: int | None = None) -> None:
+        super().__init__(message, remedy)
+        self.status = status

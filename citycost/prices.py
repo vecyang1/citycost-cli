@@ -78,7 +78,13 @@ TARGETS: dict[str, str] = {
     "Cappuccino": "cappuccino",
     "Monthly Public Transport Pass": "transport_pass",
     "Taxi 1 mile": "taxi_km",
-    "Taxi 1km": "taxi_km",
+    # "Taxi 1 km", with the space. Written "Taxi 1km" until 2026-08-25, which
+    # is a prefix of nothing Numbeo serves, so this row was unreadable on every
+    # metric-rendered page — i.e. every read from a metric country, i.e. the
+    # normal case here. It warned honestly and the warning was read as upstream
+    # drift for weeks. Comparing the two renderings of ONE city side by side is
+    # what settled it; a single rendering cannot show you what it is missing.
+    "Taxi 1 km": "taxi_km",
     "Gasoline": "gasoline_l",
     "Basic Utilities for": "utilities",
     "Broadband Internet": "internet",

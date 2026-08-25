@@ -24,6 +24,7 @@ import urllib.request
 import zlib
 from pathlib import Path
 
+from . import fallback, render
 from .errors import SourceUnavailable
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -127,67 +128,95 @@ def _with_retry(fn, *, what: str):
         try:
             return fn()
         except SourceUnavailable as exc:
-            # A rate limit or a 4xx is an answer, not a blip: retrying a 429
-            # makes the rate limit worse and retrying a 404 never helps.
-            if "429" in exc.message or "HTTP 4" in exc.message:
+            # A 4xx is an answer, not a blip: retrying a 429 makes the rate
+            # limit worse and retrying a 404 never helps. Keyed on the status,
+            # never on the message — see errors.SourceUnavailable.
+            if exc.status is not None and 400 <= exc.status < 500:
                 raise
             last = exc
+    # Carry the status through. Losing it here means a 503 that survived four
+    # attempts arrives at the fallback decision as "no status", so `is_blocked`
+    # says no and the escape hatch never opens for the one failure mode most
+    # likely to need it.
     raise SourceUnavailable(
         f"{what} failed after {RETRIES} attempts: {last.message if last else ''}",
-        last.remedy if last else "check network connectivity")
+        last.remedy if last else "check network connectivity",
+        status=last.status if last else None)
 
 
-#: An external fetcher, for the case where the polite path is genuinely blocked.
-#:
-#: ``CITYCOST_FETCH_CMD`` is a shell template containing ``{url}``. citycost runs
-#: it, takes stdout as the response body, and requires exit 0. That is the whole
-#: contract — which is the point: this repository ships **no** proxy code and
-#: **no** credentials, and cannot leak what it never holds. Anyone who already
-#: has a fetcher (a proxy CLI, a corporate egress, a cache) plugs it in without
-#: this project growing a dependency or a secret.
-#:
-#:     export CITYCOST_FETCH_CMD='my-fetcher {url} --raw'
-#:
-#: Deliberately opt-in. Making it the default would spend someone's money by
-#: surprise and would hide the signal that a sweep is too aggressive, instead of
-#: fixing it — and a tool that routes around a rate limit by default is a worse
-#: citizen than one that waits.
-FETCH_CMD_ENV = "CITYCOST_FETCH_CMD"
+def _via_fetcher(url: str, cfg, timeout: int, *, data: bytes | None,
+                 method: str, blocked: int | None) -> str:
+    """One attempt through the external fetcher. Deliberately not retried.
+
+    Every attempt here costs somebody bandwidth, and the fetcher has its own
+    retry policy; wrapping it in ours would multiply two backoffs together and
+    bill for the product.
+    """
+    # No "is it configured" guard here on purpose: `_fetch` refuses before it
+    # ever calls this, and a second check that cannot fire is a guard a reader
+    # trusts and a mutation test grades as covered.
+    template = cfg.cmd_for(method)
+    fallback.record(url, blocked, method)
+    _throttle(url)          # a proxy exit is still an IP somebody else shares
+    return fallback.run(url, template, timeout, data=data, method=method)
 
 
-def _external_fetch(url: str, template: str, timeout: int) -> str:
-    import shlex
-    import subprocess
-    if "{url}" not in template:
-        raise SourceUnavailable(
-            f"{FETCH_CMD_ENV} must contain the literal {{url}} placeholder",
-            f"e.g. {FETCH_CMD_ENV}='my-fetcher {{url}} --raw'")
-    argv = [part.replace("{url}", url) for part in shlex.split(template)]
+def _fetch(url: str, *, timeout: int, data: bytes | None, method: str,
+           direct):
+    """Direct first; the fetcher only when the direct path is *refused*.
+
+    The three modes differ in one decision only, which is why they live here
+    and not scattered across call sites:
+
+    ``never``   direct only, and a 429 is a failure the caller must see.
+    ``auto``    direct, then the fetcher on 403/429/503. The default.
+    ``always``  the fetcher only — for when you already know you are blocked
+                and would rather not spend a minute proving it again.
+    """
+    cfg = fallback.settings()
+    if cfg.mode == "always":
+        if not cfg.cmd_for(method):
+            raise SourceUnavailable(
+                f"{fallback.MODE_ENV}=always but no {method} fetch command is "
+                f"configured",
+                f"set one in {fallback.config_path()}, or use "
+                f"{fallback.MODE_ENV}=auto")
+        return _via_fetcher(url, cfg, timeout, data=data, method=method,
+                            blocked=None)
     try:
-        proc = subprocess.run(argv, capture_output=True, timeout=timeout + 15)
-    except FileNotFoundError as exc:
-        raise SourceUnavailable(f"{FETCH_CMD_ENV} command not found: {argv[0]}",
-                                f"check {FETCH_CMD_ENV}, or unset it to use the "
-                                f"built-in fetcher") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise SourceUnavailable(f"{FETCH_CMD_ENV} timed out on {url}",
-                                "raise the timeout or unset the variable") from exc
-    if proc.returncode != 0:
-        # A non-zero exit with a body is the dangerous case: a 429 page is
-        # ~20 KB of plausible HTML and would parse as content if trusted.
-        err = proc.stderr.decode("utf-8", "replace")[:200]
-        raise SourceUnavailable(
-            f"{FETCH_CMD_ENV} exited {proc.returncode} for {url}: {err}",
-            "the external fetcher failed; it must exit 0 only on a 2xx")
-    return _decode(proc.stdout, "")
+        return _with_retry(direct, what=url)
+    except SourceUnavailable as exc:
+        if cfg.mode == "never" or not fallback.is_blocked(exc):
+            raise
+        if not cfg.cmd_for(method):
+            # Blocked with nothing to fall back to: say how to get one rather
+            # than repeating "wait and retry", which was measured to still be
+            # wrong an hour after the load stopped. Name the variable for
+            # *this* verb —
+            # a GET-only configuration is the common half-installed state, and
+            # pointing its owner at the GET variable they already set is the
+            # kind of right-answer-to-the-wrong-question that stops a reader
+            # before the line that would have fixed it.
+            var = (fallback.POST_CMD_ENV if method == "POST"
+                   else fallback.GET_CMD_ENV)
+            how = (" (the request body arrives on the command's stdin)"
+                   if method == "POST" else "")
+            exc.remedy = (
+                f"{exc.remedy}; or configure an external {method} fetcher: "
+                f"set {var}{how} in {fallback.config_path()} "
+                f"— `citycost doctor` reports what is wired")
+            raise
+        render.note(
+            f"  ! {url.split('/')[2]} refused this client (HTTP {exc.status})"
+            f" -> retrying through the configured fetcher (spends its "
+            f"bandwidth)")
+        return _via_fetcher(url, cfg, timeout, data=data, method=method,
+                            blocked=exc.status)
 
 
 def http_get(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> str:
-    template = os.environ.get(FETCH_CMD_ENV)
-    if template:
-        return _with_retry(
-            lambda: _external_fetch(url, template, timeout), what=url)
-    return _with_retry(lambda: _http_get_once(url, timeout=timeout), what=url)
+    return _fetch(url, timeout=timeout, data=None, method="GET",
+                  direct=lambda: _http_get_once(url, timeout=timeout))
 
 
 def _http_get_once(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> str:
@@ -207,12 +236,13 @@ def _http_get_once(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> str:
         if exc.code == 429:
             raise SourceUnavailable(
                 f"{url} rate-limited (HTTP 429)",
-                "wait and retry; lower concurrency, or widen --max-age so "
-                "cached figures are reused") from exc
+                "lower concurrency, widen --max-age so cached figures are "
+                "reused, or configure an external fetcher (citycost doctor)",
+                status=429) from exc
         raise SourceUnavailable(
             f"{url} returned HTTP {exc.code}",
             "check the URL is still valid; the site may have moved or blocked "
-            "this client") from exc
+            "this client", status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise SourceUnavailable(f"{url} unreachable: {exc.reason}",
                                 "check network connectivity") from exc
@@ -220,10 +250,27 @@ def _http_get_once(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> str:
 
 def http_post_json(url: str, payload: dict, *, timeout: int = DEFAULT_TIMEOUT,
                    headers: dict | None = None) -> dict:
-    return _with_retry(
-        lambda: _http_post_json_once(url, payload, timeout=timeout,
-                                     headers=headers),
-        what=url)
+    """POST JSON, with the same direct-then-fetcher policy as `http_get`.
+
+    A GET-only fallback would be worse than none: the half that works hides
+    that the other half never runs, and the caller discovers its discovery
+    command is dead only when it is already blocked.
+    """
+    text = _fetch(
+        url, timeout=timeout, data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        direct=lambda: _http_post_json_once(url, payload, timeout=timeout,
+                                            headers=headers))
+    if isinstance(text, dict):          # the direct path already parsed it
+        return text
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SourceUnavailable(
+            f"{url} returned non-JSON through the external fetcher: "
+            f"{text[:160]}",
+            "the fetcher must print the response body and nothing else "
+            "(the --raw flag on most)") from exc
 
 
 def _http_post_json_once(url: str, payload: dict, *,
@@ -251,9 +298,12 @@ def _http_post_json_once(url: str, payload: dict, *,
         if exc.code == 429:
             raise SourceUnavailable(
                 f"{url} rate-limited (HTTP 429) {detail}".strip(),
-                "this endpoint is explicitly not a bulk source; slow down") from exc
+                "this endpoint is explicitly not a bulk source; slow down, or "
+                "configure an external fetcher (citycost doctor)",
+                status=429) from exc
         raise SourceUnavailable(f"{url} returned HTTP {exc.code} {detail}".strip(),
-                                "check the endpoint and payload shape") from exc
+                                "check the endpoint and payload shape",
+                                status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise SourceUnavailable(f"{url} unreachable: {exc.reason}",
                                 "check network connectivity") from exc

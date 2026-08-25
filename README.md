@@ -92,15 +92,48 @@ Both sources are free and neither owes you access. The client paces itself
 and **never retries a 429** — retrying a rate limit is what makes a rate limit
 worse. Widening `--max-age` turns a repeat sweep into zero requests.
 
-If you are genuinely blocked and have your own fetcher, plug it in:
+### When a source refuses you anyway
 
-```bash
-export CITYCOST_FETCH_CMD='my-fetcher {url} --raw'
+Numbeo's 429 is not transient. Measured 2026-08-25: the load that caused it
+stopped at 09:25 and the same IP was still refused at 10:39, and still refused
+when measurement ended. Waiting is not a plan.
+
+So citycost will **reroute automatically** — but only through a fetcher you
+name, and only after the free direct path was tried and refused:
+
+```ini
+# ~/.config/citycost/fetch.conf   (or the same names as environment variables)
+CITYCOST_FETCH_MODE=auto
+CITYCOST_FETCH_CMD=my-fetcher {url} --raw
+CITYCOST_POST_CMD=my-fetcher {url} --raw --data @- --header 'Content-Type: application/json'
 ```
 
-citycost runs that command, takes stdout as the body, and requires exit 0. This
-repository ships no proxy code and no credentials, and cannot leak what it never
-holds.
+citycost runs the command, takes stdout as the body, and requires exit 0. That
+is the entire contract, which is the point: **this repository ships no proxy
+code and no credentials, and cannot leak what it never holds.** Anything that
+can fetch a URL works — a proxy CLI, a corporate egress, an SSH tunnel, a
+cache, a friend's VPS.
+
+| | |
+|---|---|
+| `auto` (default) | direct first; reroute on 403 / 429 / 503 only |
+| `never` | direct only — a 429 fails and you see it |
+| `always` | skip the direct attempt, when you already know you are blocked |
+
+Rules the policy keeps, so that "bold" does not become "rude":
+
+- **A 404 never reroutes.** A wrong slug through a residential proxy is the
+  same wrong slug, bought.
+- **Nothing is silent.** Every reroute prints to stderr, and the run ends with
+  a provenance line saying how many requests did not come down the ordinary
+  path — a client that quietly routes around a rate limit is a client whose
+  owner never learns their sweep was too aggressive.
+- **Nothing happens without configuration.** With no fetcher set, `auto` is
+  exactly the old direct-only behaviour, and the 429 error tells you how to
+  change that instead of telling you to wait.
+
+`citycost doctor` proves the fetcher *works* — it runs a real request through
+it — rather than reporting that a variable is set.
 
 ## Data, licence, and what you may do with the output
 

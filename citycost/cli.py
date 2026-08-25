@@ -13,9 +13,11 @@ stay pipe-clean.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
-from . import __version__, budget, discover, prices, rankings, render
+from . import (__version__, budget, discover, fallback, prices, rankings,
+               render)
 from .errors import CitycostError
 from .net import DEFAULT_MAX_AGE, clear_cache, fmt_age, prune_cache
 
@@ -149,19 +151,29 @@ def cmd_compare(args) -> int:
     if not records:
         return 1
 
+    # One city failing among several is a partial answer and exits 0 — the
+    # table says N/A and stderr says why. *Every* city failing is a failed run
+    # and must exit non-zero: otherwise a blocked source hands a `--json`
+    # consumer a full-shaped payload of nulls with a success code, which reads
+    # as "these cities have no data" rather than "nothing was read".
+    status = 0 if any(not r.get("error") for r in records) else 1
+    if status:
+        render.note("  no city could be read — every figure below is absent, "
+                    "not zero")
+
     keys = [k for k, _ in _display_keys(args)]
     if args.json:
         render.emit_json([_as_json(r, keys) for r in records])
-        return 0
+        return status
     if args.csv:
         render.emit_csv([_as_flat(r, keys) for r in records],
                         ["slug", "country", *keys, "budget", "savings",
                          "rent_to_income_pct", "control_local", "ratio",
                          "missing"])
-        return 0
+        return status
 
     _print_compare(records, keys, args)
-    return 0
+    return status
 
 
 def _display_keys(args):
@@ -431,9 +443,49 @@ def cmd_find(args) -> int:
 
 # ------------------------------------------------------------------ doctor --
 
+#: A tiny, stable, uncontroversial page. `doctor` must prove the fetcher
+#: *works*, not that a variable is set — an enabled-but-broken escape hatch is
+#: discovered at the exact moment it was needed, which is the worst time.
+PROBE_URL = "https://example.com/"
+
+
+def _transport_check() -> tuple[str, str, str]:
+    cfg = fallback.settings()
+    where = [f"mode={cfg.mode} (from {cfg.mode_source})"]
+    if cfg.config_status == "foreign":
+        where.append(f"{cfg.config_file} exists but declares none of "
+                     f"citycost's keys")
+    elif cfg.config_status == "unreadable":
+        where.append(f"{cfg.config_file} unreadable")
+    elif cfg.config_status == "missing":
+        where.append(f"no config at {cfg.config_file}")
+
+    if not cfg.get_cmd:
+        return ("fallback fetcher", "off",
+                f"{'; '.join(where)} — a 429 will fail rather than reroute. "
+                f"Set {fallback.GET_CMD_ENV} (and {fallback.POST_CMD_ENV}) "
+                f"there to enable it.")
+    if cfg.mode == "never":
+        return ("fallback fetcher", "off",
+                f"configured (from {cfg.get_source}) but {'; '.join(where)}")
+    try:
+        body = fallback.run(PROBE_URL, cfg.get_cmd, 30, method="GET")
+    except CitycostError as exc:
+        return ("fallback fetcher", "FAIL", f"{exc.message} | {exc.remedy}")
+    have_post = "POST ok" if cfg.post_cmd else "POST NOT configured"
+    return ("fallback fetcher", "ok",
+            f"GET probe {len(body)}B from {PROBE_URL}; {have_post}; "
+            f"{'; '.join(where)}")
+
+
 def cmd_doctor(args) -> int:
     ok = True
     checks = []
+
+    name, status, detail = _transport_check()
+    if status == "FAIL":
+        ok = False
+    checks.append((name, status, detail))
 
     try:
         info = discover.server_info()
@@ -502,6 +554,12 @@ def build_parser() -> argparse.ArgumentParser:
     def common(sp, *, cache=True):
         sp.add_argument("--json", action="store_true", help="JSON output")
         sp.add_argument("--no-color", action="store_true")
+        sp.add_argument("--fetch-mode", choices=list(fallback.MODES),
+                        default=None,
+                        help="auto (default) tries direct and falls back to "
+                             "the configured fetcher when a source refuses "
+                             "this client; never stays direct; always skips "
+                             "the direct attempt")
         if cache:
             sp.add_argument("--max-age", type=int, default=DEFAULT_MAX_AGE,
                             metavar="SEC",
@@ -594,6 +652,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # The flag is applied by setting the variable the resolver already reads,
+    # so there is exactly one place that decides the mode.
+    if getattr(args, "fetch_mode", None):
+        os.environ[fallback.MODE_ENV] = args.fetch_mode
     try:
         return args.func(args)
     except CitycostError as exc:
@@ -601,6 +663,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
+    finally:
+        used = fallback.events()
+        if used:
+            render.note(f"  provenance: {len(used)} request(s) served through "
+                        f"the external fetcher, not a direct read")
 
 
 if __name__ == "__main__":
