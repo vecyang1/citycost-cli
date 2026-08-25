@@ -23,8 +23,8 @@ number no source stands behind.
 | Role | Source | Answers | Cost |
 |---|---|---|---|
 | **Discover** | nomads.com MCP | "*which* cities even qualify?" — filter by budget, region, internet, safety, temperature | free, rate-limited, ≤100/call |
-| **Verify** | Numbeo city HTML | "what does it *actually* cost, itemised?" — 65 rows, server-converted to USD | free, 1 request/city |
-| **Rank** | Numbeo rankings HTML | "how does it compare globally and *historically*?" — 558 cities × 6 indices × 31 snapshots | free, 1 request per 558 cities |
+| **Verify** | Numbeo city HTML | "what does it *actually* cost, itemised?" — 55 rows, server-converted to USD | free, 1 request/city |
+| **Rank** | Numbeo rankings HTML | "how does it compare globally and *historically*?" — 558 cities × 6 index columns × 31 snapshots, across 7 verticals | free, 1 request per 558 cities |
 | **Control** | ratio of our budget to nomads' aggregate | "is this number even plausible?" | free, reuses the above |
 
 The gap each fills is real, not cosmetic. **Numbeo cannot answer "which"** — it
@@ -198,7 +198,7 @@ the fallback path serves the same units the direct path would have.
 | Source | Why not |
 |---|---|
 | Numbeo Data API | $260 / $480 / $1,250 per month, no free tier |
-| getwherenext `/api/data/city-prices` | free + CC BY 4.0, but **modelled**: `price_local` is exactly `price_usd × 25300` for every Vietnamese row; 19 items vs Numbeo's 65; its own `updated` field reads 2026-01-15 |
+| getwherenext `/api/data/city-prices` | free + CC BY 4.0, but **modelled**: `price_local` is exactly `price_usd × 25300` for every Vietnamese row; 19 items vs Numbeo's 55; its own `updated` field reads 2026-01-15 |
 | affordwhere.com | terms permit personal non-commercial use only; its stated Eurostat/OECD sources were checked and **contain no Vietnam at all** |
 | World Bank ICP | country-level only; indices, not prices — useful as a country sanity anchor, not a substitute |
 | Eurostat / OECD | no Southeast Asia price coverage; OECD `DSD_PPP` returns `NoRecordsFound` for VNM |

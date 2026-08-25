@@ -201,7 +201,9 @@ def run(url: str, template: str, timeout: int, *,
         data: bytes | None = None, method: str = "GET") -> str:
     """Run the external fetcher and return the body. Exit 0 or raise.
 
-    Retried only on `TRANSPORT_EXIT_CODES`, and only once.
+    Retried only on `TRANSPORT_EXIT_CODES`, up to `TRANSPORT_RETRIES` times
+    with backoff — never on anything else, because every other non-zero exit
+    means the remote answered.
     """
     for attempt in range(TRANSPORT_RETRIES + 1):
         if TRANSPORT_BACKOFF[attempt]:
@@ -250,7 +252,8 @@ def _run_once(url: str, template: str, timeout: int, *,
         raise SourceUnavailable(
             f"external {method} fetcher exited {proc.returncode} for {url}: "
             f"{err}",
-            "the exit node failed before any HTTP answer; retried once already"
+            f"the exit node failed before any HTTP answer; already retried "
+            f"{TRANSPORT_RETRIES}x with backoff"
             if transport else
             "the fetcher must exit 0 only on a 2xx response",
             exit_code=proc.returncode)

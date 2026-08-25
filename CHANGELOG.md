@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.2.0 — 2026-08-25 — `doctor` was grading a cache, not the network
+
+**The health check could not fail.** `cmd_doctor` passed `max_age=args.max_age`
+— default 3600 — to both Numbeo checks, so an hour-old cache answered the one
+question the command exists to ask. Measured, two ways, with the network made
+genuinely unreachable:
+
+```
+CITYCOST_FETCH_MODE=always CITYCOST_FETCH_CMD='/usr/bin/false {url}'
+  numbeo rankings  ok  558 cities, 6 columns
+  numbeo prices    ok  Prague: 21/21 rows priced (metric served)
+
+CITYCOST_CONFIG=/dev/null CITYCOST_FETCH_MODE=never     # no fetcher, banned IP
+  exit 0, every check green
+```
+
+The second is the one that would have cost someone a day: it is exactly the
+state a new user lands in — Numbeo has banned their address for seven days and
+they have configured no fallback — and `doctor`, the command you run *because*
+something is wrong, reported nothing wrong. Not a wrong number; a **structurally
+impossible failure**, the same green light as a type-checker run over zero
+files.
+
+- Both Numbeo checks now fetch with `max_age=0`. `--max-age` still applies to
+  every other subcommand; for `doctor` it was never a meaningful knob, because
+  a reachability check its own cache can satisfy has examined nothing.
+- Each row states `live;`. `ok` alone cannot tell a reader which of the two
+  they got, and a health report is read precisely by someone who cannot ask.
+- After the fix, same two scenarios: `FAIL` / `FAIL`, exit 1. Normal run still
+  exits 0 — and now genuinely proves the whole path, since it takes the real
+  429 and reroutes before answering.
+
+**`--json`'s `raw` was being truncated by a display flag.** `--full` selects
+table columns; it was also deciding how much of the parse a machine consumer
+received — 8 of 21 rows, under a key named `raw`. `raw["taxi_km"]` returned
+`None` for a row that had parsed correctly and been discarded by a rendering
+option, which reads as "Numbeo does not publish this" rather than "you did not
+ask for it". `raw` is now the complete parse in both cases; `values` still
+follows `--full`, which is a documented display selection.
+
 ## 1.1.1 — 2026-08-25 — the server had been stating the ban length all along
 
 **Correction to 1.1.0's own reasoning.** 1.1.0 justified the automatic reroute
@@ -154,6 +194,8 @@ script, which is now a pointer to this package.
 - `rank` / `trend` / `snapshots` — the Numbeo ranking family: 7 verticals,
   city / country / region views, 31 snapshots back to 2009.
 - `find` — live slug lookup; `doctor` — reachability of every source.
+  **Corrected in 1.2.0:** two of the four rows were answerable from an
+  hour-old cache until then, so this overstated what `doctor` proved.
 
 **Measured facts this release is built on** (all 2026-08-25, live)
 - Numbeo Data API: $260 / $480 / $1,250 per month, no free tier.

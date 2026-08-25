@@ -231,5 +231,37 @@ class _cfg:
         return self.post_cmd if method.upper() == "POST" else self.get_cmd
 
 
+class EveryCommandSpeaksJson(unittest.TestCase):
+    """README's first paragraph sells this CLI as agent-first: "Every command
+    speaks `--json`". It was false for `cache`, the only subparser not built
+    through `common()` — and false in the direction an agent finds by crashing
+    with exit 2 mid-run, since nothing announces which commands are exempt.
+
+    Ranges over the parser's own subcommand registry rather than a list written
+    here, so a subcommand added next year is either covered or visibly absent.
+    The count is asserted too: `0 subcommands checked` and `all correct` are
+    otherwise the same green.
+    """
+
+    def _subcommands(self):
+        parser = cli.build_parser()
+        choices = [a.choices for a in parser._subparsers._group_actions
+                   if getattr(a, "choices", None)]
+        return dict(choices[0])
+
+    def test_the_registry_was_actually_read(self):
+        self.assertGreaterEqual(len(self._subcommands()), 10,
+                                "subcommand registry did not parse; every "
+                                "assertion below would be vacuous")
+
+    def test_each_one_accepts_json(self):
+        for name, sub in self._subcommands().items():
+            with self.subTest(command=name):
+                flags = {o for a in sub._actions for o in a.option_strings}
+                self.assertIn("--json", flags,
+                              f"`citycost {name} --json` exits 2; the README "
+                              f"promises every command speaks it")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

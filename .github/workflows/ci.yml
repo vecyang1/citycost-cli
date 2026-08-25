@@ -18,7 +18,7 @@ jobs:
         run: python tools/scan_secrets.py .
       # Both invocations, because they are not the same check. `-s tests`
       # without `-t .` cannot resolve the suite's relative imports and reports
-      # "Ran 7 tests / errors=7" against a suite of 111 — a broken import
+      # a handful of errors against a suite of hundreds — a broken import,
       # wearing the shape of a small suite. Running both means neither can rot.
       - name: Unit tests (no network) — from the repo root
         run: python -m unittest discover -t . -s tests -v

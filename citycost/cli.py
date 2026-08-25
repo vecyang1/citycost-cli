@@ -19,6 +19,7 @@ import sys
 from . import (__version__, budget, discover, fallback, prices, rankings,
                render)
 from .errors import CitycostError
+from . import net
 from .net import DEFAULT_MAX_AGE, clear_cache, fmt_age, prune_cache
 
 EPILOG = """\
@@ -206,7 +207,11 @@ def _as_json(rec: dict, keys: list[str]) -> dict:
         "source": "numbeo-scrape", "url": rec.get("url"),
         "error": rec.get("error"), "remedy": rec.get("remedy"),
         "values": {k: vals.get(k) for k in keys},
-        "raw": {k: (rec.get("raw") or {}).get(k) for k in keys},
+        # NOT filtered by `keys`. `--full` is a table-column choice; it was
+        # also deciding how much of the parse a machine consumer saw, so
+        # `raw["taxi_km"]` read None for a row that parsed fine. `values`
+        # still follows the display selection — that one is documented.
+        "raw": dict(rec.get("raw") or {}),
         "missing": b["missing"],
         "monthly_budget_usd": b["total"],
         "monthly_savings_usd": budget.savings(vals, b["total"]),
@@ -518,23 +523,31 @@ def cmd_doctor(args) -> int:
         ok = False
         checks.append(("nomads.com MCP", "FAIL", exc.message))
 
+    # `max_age=0`, never `args.max_age`. This command's whole question is *is
+    # this source reachable right now*, and a cache can answer it — measured
+    # 2026-08-25, doctor reported both Numbeo rows `ok` with the network made
+    # unreachable, at exit 0. A reachability check its own cache can satisfy
+    # examines zero network, which is the same green light as a type-checker
+    # over zero files. The word "live" is on the line for the same reason: `ok`
+    # cannot tell a reader which of the two it got.
     try:
-        t = rankings.fetch("cost-of-living", max_age=args.max_age)
+        t = rankings.fetch("cost-of-living", max_age=0)
         checks.append(("numbeo rankings", "ok",
-                       f"{len(t['rows'])} cities, {len(t['columns'])} columns"))
+                       f"live; {len(t['rows'])} cities, "
+                       f"{len(t['columns'])} columns"))
     except CitycostError as exc:
         ok = False
         checks.append(("numbeo rankings", "FAIL", exc.message))
 
     try:
-        rec = prices.fetch("Prague", max_age=args.max_age)
+        rec = prices.fetch("Prague", max_age=0)
         got = sum(1 for v in rec["values"].values() if v is not None)
         # TARGETS holds two spellings for every unit-dependent row, so its raw
         # length is not the metric count. Reporting 21/28 made a complete read
         # look like a 75% one.
         total = len(set(prices.TARGETS.values()))
         checks.append(("numbeo prices", "ok",
-                       f"Prague: {got}/{total} rows priced "
+                       f"live; Prague: {got}/{total} rows priced "
                        f"({rec.get('measurement_system')} served)"))
     except CitycostError as exc:
         ok = False
@@ -556,10 +569,18 @@ def _short(text: str, width: int = DETAIL_WIDTH) -> str:
 
 
 def cmd_cache(args) -> int:
+    """`cache` was the one subcommand that could not speak `--json`, which made
+    the README's "every command speaks --json" false for a tenth of the surface
+    — and false in the direction an agent discovers by crashing."""
     if args.clear:
-        print(f"removed {clear_cache()} cache files")
+        removed, verb = clear_cache(), "removed"
     else:
-        print(f"pruned {prune_cache()} expired cache files")
+        removed, verb = prune_cache(), "pruned"
+    if getattr(args, "json", False):
+        render.emit_json({"action": verb, "files": removed})
+    else:
+        suffix = "" if args.clear else " expired"
+        print(f"{verb} {removed}{suffix} cache files")
     return 0
 
 
@@ -671,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ca = sub.add_parser("cache", help="prune or clear the local cache")
     ca.add_argument("--clear", action="store_true")
+    ca.add_argument("--json", action="store_true", help="JSON output")
     ca.set_defaults(func=cmd_cache)
     return p
 
@@ -693,6 +715,19 @@ def main(argv: list[str] | None = None) -> int:
         if used:
             render.note(f"  provenance: {len(used)} request(s) served through "
                         f"the external fetcher, not a direct read")
+        # Rung 3: the remedy, attached to the moment it is needed. Passing an
+        # explicit --fetch-mode asks a question about the *transport*; a run
+        # that made zero live reads answered it from disk and proved nothing
+        # about the network. Measured 2026-08-25 on this tool: an agent read
+        # `--fetch-mode never` + exit 0 + full figures as "the ban lifted",
+        # while the address had six more days to go. The age was printed and
+        # skipped — a fact that is reachable is not a fact that arrives.
+        mode = getattr(args, "fetch_mode", None)
+        if mode and mode != fallback.DEFAULT_MODE and net.reads()["live"] == 0:
+            render.note(f"  ! --fetch-mode {mode} was not exercised: every "
+                        f"figure came from the local cache, so no transport "
+                        f"was tested")
+            render.note("    -> add --max-age 0 to make this a live check")
 
 
 if __name__ == "__main__":

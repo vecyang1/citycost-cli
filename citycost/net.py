@@ -184,7 +184,7 @@ def _with_retry(fn, *, what: str):
 
 def _via_fetcher(url: str, cfg, timeout: int, *, data: bytes | None,
                  method: str, blocked: int | None) -> str:
-    """One attempt through the external fetcher. Deliberately not retried.
+    """One call into the external fetcher; `fallback.run` owns retry from here.
 
     Every attempt here costs somebody bandwidth, and the fetcher has its own
     retry policy; wrapping it in ours would multiply two backoffs together and
@@ -379,6 +379,23 @@ def _cache_path(key: str) -> Path:
     return cache_dir() / f"{safe}.{digest}.json"
 
 
+#: Did this process actually touch the network? `--fetch-mode never/always` is
+#: a question *about the transport*, and a run answered entirely from disk has
+#: tested none of it — which is how `--fetch-mode never` returned a confident
+#: exit 0 while the address was banned for a week. Counted here because
+#: `cached_json` is the one place that knows, and a second counter elsewhere
+#: would be a second answer to the same question.
+_READS = {"live": 0, "cached": 0}
+
+
+def reads() -> dict:
+    return dict(_READS)
+
+
+def reset_reads() -> None:
+    _READS.update(live=0, cached=0)
+
+
 def cached_json(key: str, schema: str, max_age: int, produce):
     """Return `(payload, age_seconds, from_cache)`.
 
@@ -396,8 +413,12 @@ def cached_json(key: str, schema: str, max_age: int, produce):
             except (json.JSONDecodeError, OSError):
                 blob = None
             if isinstance(blob, dict) and blob.get("_schema") == schema:
+                _READS["cached"] += 1
                 return blob.get("payload"), age, True
 
+    # Counted before the call, not after: a live attempt that *fails* still
+    # exercised the transport, which is the question this counter answers.
+    _READS["live"] += 1
     payload = produce()
     try:
         cache_dir().mkdir(parents=True, exist_ok=True)

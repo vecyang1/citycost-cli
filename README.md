@@ -46,7 +46,7 @@ only what it is uniquely good at.
 |---|---|---|---|
 | **discover** | nomads.com MCP | *which* cities qualify — filter by budget, region, internet, safety, temperature | free; **60 requests/hour per IP**, ≤100 results per call |
 | **compare** | numbeo.com city pages | what one city *actually* costs, 21 itemised rows | free; 1 request per city |
-| **rank** | numbeo.com ranking pages | how cities compare — 7 indices, 558 cities, 31 snapshots back to 2009 | free; **1 request per 558 cities** |
+| **rank** | numbeo.com ranking pages | how cities compare — 7 verticals, 558 cities, 6 index columns each, 31 snapshots back to 2009 | free; **1 request per 558 cities** |
 | **crosscheck** | ratio of the two | is this figure even plausible? | free; reuses the above |
 
 Numbeo cannot answer *which* — it has no search by budget, so you must already
@@ -67,6 +67,12 @@ publishes aggregates only. Either alone is a half-tool.
   `null` in JSON and `N/A` in text; a budget missing one component reports
   `N/A` for the whole total rather than a short sum, and names the missing row
   on stderr.
+- **A display flag never shapes the JSON parse.** `compare --json` returns
+  `raw` — the complete 21-row parse, source text exactly as served — whether or
+  not you pass `--full`. `values` is the display selection and does follow it.
+  Until 1.2.0 `raw` followed it too, so `raw["taxi_km"]` was `null` for a row
+  that had parsed correctly and been dropped by a table option: an absence that
+  reads as "unpriced" when it meant "not requested".
 - **Two absences, two messages.** "a row label drifted upstream" (fix: this
   repo) and "nobody has priced it" (fix: nothing) never share a sentence.
 - **Ambiguity is returned, not resolved.** Ten city names map to two or more
@@ -156,7 +162,16 @@ Rules the policy keeps, so that "bold" does not become "rude":
   change that instead of telling you to wait.
 
 `citycost doctor` proves the fetcher *works* — it runs a real request through
-it — rather than reporting that a variable is set.
+it — rather than reporting that a variable is set. Its two Numbeo rows are
+**always read live** (`max_age=0`) and say so on the line, whatever `--max-age`
+you pass; until 1.2.0 they honoured it, so an hour-old cache could report a
+banned address as `ok` at exit 0. A reachability check its own cache can answer
+has examined nothing, and `ok` alone gives the reader no way to tell which of
+the two they got — hence the `live;` label rather than a comment in the source.
+
+Because it reads live, a green `doctor` on a blocked address is real evidence
+the *whole* path works: it takes the actual 429 and comes back through the
+fetcher before reporting.
 
 ## Data, licence, and what you may do with the output
 
@@ -178,7 +193,9 @@ evaluated and why the rejected ones were rejected.
 ## Development
 
 ```bash
-python -m unittest discover -s tests -v     # 111 tests, no network
+python -m unittest discover -t . -s tests -v   # no network, sandboxed
+# -t . is not optional: without it the relative imports in tests/ cannot
+# resolve, and the run reports errors that are not defects.
 ```
 
 The suite is offline by design. A green CI that depended on numbeo.com being up
