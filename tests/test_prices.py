@@ -139,5 +139,42 @@ class TestLabelCoverage(unittest.TestCase):
         self.assertEqual(set(prices.LABELS) - set(prices.TARGETS.values()), set())
 
 
+
+
+class TestMissingReportIsDeduplicated(unittest.TestCase):
+    """TARGETS maps two label spellings (imperial and metric) onto one key, so
+    iterating its values reports that key twice. Shipped once: a single missing
+    taxi row printed as `['taxi_km', 'taxi_km']`, which reads as two problems.
+
+    The edit that was supposed to fix this silently did nothing because the
+    replacement had no assertion behind it — which is why the behaviour is
+    pinned here rather than trusted to a diff.
+    """
+
+    def test_no_key_appears_twice_in_either_bucket(self):
+        rec = {"values": {}, "seen": {}}
+        m = prices.missing_report(rec)
+        for bucket, names in m.items():
+            with self.subTest(bucket=bucket):
+                self.assertEqual(len(names), len(set(names)), names)
+
+    def test_unmatched_ranges_over_distinct_keys_only(self):
+        m = prices.missing_report({"values": {}, "seen": {}})
+        self.assertEqual(set(m["unmatched"]), set(prices.TARGETS.values()))
+        self.assertEqual(len(m["unmatched"]), len(set(prices.TARGETS.values())))
+
+    def test_a_key_with_two_spellings_is_satisfied_by_either(self):
+        """Matching the imperial spelling must not leave the metric one
+        outstanding — they are one metric, not two."""
+        for spelling in ("Taxi 1 mile", "Taxi 1km"):
+            with self.subTest(spelling=spelling):
+                rec = {"values": {"taxi_km": 1.0}, "seen": {"taxi_km": spelling}}
+                self.assertNotIn("taxi_km", prices.missing_report(rec)["unmatched"])
+
+    def test_buckets_are_sorted_so_output_is_stable_across_runs(self):
+        m = prices.missing_report({"values": {}, "seen": {}})
+        self.assertEqual(m["unmatched"], sorted(m["unmatched"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

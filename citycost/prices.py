@@ -149,10 +149,14 @@ def missing_report(record: dict) -> dict[str, list[str]]:
         return {"unmatched": [], "blank": []}
     vals = record.get("values") or {}
     seen = record.get("seen") or {}
+    # De-duplicated: TARGETS holds two spellings for every unit-dependent row
+    # (imperial and metric), so iterating its values reports `taxi_km` twice
+    # and makes one missing row look like two.
+    keys = set(TARGETS.values())
     return {
-        "unmatched": [k for k in TARGETS.values() if k not in seen],
-        "blank": [k for k in TARGETS.values()
-                  if k in seen and vals.get(k) is None],
+        "unmatched": sorted(k for k in keys if k not in seen),
+        "blank": sorted(k for k in keys
+                        if k in seen and vals.get(k) is None),
     }
 
 
