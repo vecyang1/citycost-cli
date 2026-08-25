@@ -377,9 +377,22 @@ def cmd_rank(args) -> int:
 def cmd_trend(args) -> int:
     data = rankings.trend(args.city, vertical=args.index, column=args.column,
                           limit=args.snapshots, max_age=args.max_age)
+    flat = data.get("identical_across_snapshots")
+    if flat:
+        # Before the numbers, not after. The table is the evidence for this
+        # warning, and a reader who meets the evidence first has already
+        # formed the wrong conclusion from it.
+        render.note(f"  ! every snapshot returned an IDENTICAL table for "
+                    f"{args.city} — same metrics and the same row count in "
+                    f"all of them. That is not a stable city; that is one "
+                    f"table fetched {data['found_in']} times.")
+        render.note("    -> `?title=` is being ignored upstream. Verify with "
+                    "`citycost rank --snapshot 2014 --top 3` against "
+                    "`--snapshot current`; if those agree too, this client "
+                    "needs updating and the series above is not history.")
     if args.json:
         render.emit_json(data)
-        return 0
+        return 1 if flat else 0
     if data.get("ambiguous"):
         # Checked BEFORE rendering: printing a table of N/A rows and *then*
         # explaining why has already told the reader there was no data.
@@ -407,7 +420,7 @@ def cmd_trend(args) -> int:
     if data["found_in"] < data["requested"]:
         render.note("  N/A rows mean the city was not ranked in that snapshot "
                     "— an absence, not a zero")
-    return 0
+    return 1 if flat else 0
 
 
 def cmd_snapshots(args) -> int:

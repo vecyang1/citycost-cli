@@ -302,5 +302,36 @@ def trend(city: str, *, vertical: str = "cost-of-living", column: str | None = N
     return {"city": city, "anchor": anchor, "ambiguous": ambiguous,
             "vertical": vertical, "column": key, "columns": columns,
             "series": series,
+            "identical_across_snapshots": _is_one_table_repeated(series),
             "found_in": sum(1 for s in series if s.get("found")),
             "requested": len(snaps)}
+
+
+def _is_one_table_repeated(series: list[dict]) -> bool:
+    """True when every snapshot returned the *same* table — i.e. not history.
+
+    `?title=` is a request, not a guarantee. A parameter can be accepted and
+    silently **ignored** rather than rejected, and this one has no error path
+    to fail into: the page would answer 200 with the current table for every
+    snapshot, the series would come back complete with `found: True` on every
+    point, and a flat line would be read as "this city is remarkably stable".
+    Nothing raises, and the snapshot `<select>` this client reads its list
+    from would still be on the page.
+
+    Measured 2026-08-25, all seven verticals, oldest vs newest snapshot: every
+    one honours it today (quality-of-life 95 rows in 2014 against 305 in
+    2026-mid; cost-of-living 41 against 547). So this is an alarm for drift,
+    not a description of the source as it stands.
+
+    `of` is what makes the predicate safe to assert. A genuinely unchanging
+    city still sits in tables of *different sizes* year to year, and Numbeo's
+    snapshots are not monotonic — 2022 carried 578 cities, 2026-mid carries
+    547. Identical metrics **and** an identical table size across three or
+    more snapshots is the shape of one table fetched three times.
+    """
+    found = [s for s in series if s.get("found")]
+    if len(found) < 3:
+        return False
+    fingerprints = {(tuple(sorted((s.get("metrics") or {}).items())), s.get("of"))
+                    for s in found}
+    return len(fingerprints) == 1

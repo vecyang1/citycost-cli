@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.3.0 — 2026-08-25 — a trend could not tell history from one table fetched twelve times
+
+**The last open question in `docs/DATA-STRATEGY.md` was "does every non-cost
+vertical actually support `?title=` history?" Measured through the tool's own
+transport: all seven do.** Each vertical's oldest snapshot against its newest —
+quality-of-life 95 rows in 2014 against 305 in 2026-mid, cost-of-living 41
+against 547, and five more — so the planned degrade-to-current-only path is not
+needed.
+
+Answering it is what exposed the defect. **`?title=` is a request, not a
+guarantee, and it has no error to fail into.** A parameter can be accepted and
+silently ignored rather than refused; if Numbeo ever did that, every snapshot
+would return the current table, the snapshot `<select>` this client reads its
+list from would still be on the page, and `trend` would hand back a complete
+series with `found: true` on every point. A flat line, read as a stable city.
+Nothing raises, nothing is missing, and the number is wrong in the one way this
+repository exists to catch.
+
+- `rankings._is_one_table_repeated` refuses it: three or more found snapshots
+  sharing identical metrics **and** an identical table size is one table
+  fetched three times. `trend` warns on stderr naming the remedy and exits
+  non-zero; `--json` still emits parseable JSON on stdout carrying
+  `identical_across_snapshots`, because the run worth catching must not be the
+  run that crashes somebody's parser.
+- Table size is what makes the predicate safe to assert rather than merely
+  plausible. A genuinely unchanging city still sits in tables of *different*
+  sizes year to year — Numbeo's snapshots are not monotonic, 2022 carried 578
+  cities and 2026-mid carries 547 — so metrics alone would fire on real data,
+  and a warning that fires on healthy input gets muted within a week.
+- Both directions are pinned, and the false-positive direction is the half
+  that rots: a city printing the same figure across three snapshots of
+  different sizes must **not** be flagged.
+
+**`python -m citycost` now works.** There was no `__main__.py`, so the package
+could not be executed. That is the invocation the README's own
+`command not found` advice leaves a reader needing — their `PATH` is wrong,
+which is exactly when the console script is the thing they cannot run — and it
+is the form a script or an agent should use, because it cannot pick a different
+copy. On 2026-08-25 a `pipx` build at 1.1.1 and a source tree at 1.2.0 both
+answered to `citycost` and both printed the version they were, which made a
+verified fix look like it had not worked.
+
+**Live sweep, every command through the real entry point** while the address
+was banned direct, i.e. entirely through the reroute: 15 commands, 14 green
+first time. `rank --index quality-of-life` failed once at exit 2 and reproduced
+green immediately, then green across all seven verticals — a transient lane
+failure, not a broken vertical, and worth recording as such because the first
+reading was "six of seven verticals are broken". A blocker is scoped to what
+was measured.
+
 ## 1.2.0 — 2026-08-25 — `doctor` was grading a cache, not the network
 
 **The health check could not fail.** `cmd_doctor` passed `max_age=args.max_age`

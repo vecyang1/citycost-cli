@@ -33,3 +33,17 @@ jobs:
           cd /tmp
           /tmp/venv/bin/citycost --version
           /tmp/venv/bin/citycost --help > /dev/null
+          # Both entry points, from outside the tree. `-m` is the one a broken
+          # PATH leaves a user with, and a module missing from the package is
+          # invisible from inside the source tree — which is how it shipped
+          # absent until 1.3.0.
+          #
+          # Reproducing this job locally: `rm -rf build/` first. setuptools
+          # reuses `build/lib/`, so a file DELETED from the source is still
+          # copied into the wheel from the previous build and the check passes
+          # over an artefact that no longer matches the tree. CI never sees
+          # this because it starts from a clean checkout; a developer does.
+          # (`pip`'s wheel cache does the same thing one layer up — pass
+          # `--no-cache-dir` if you build with pip rather than `build`.)
+          /tmp/venv/bin/python -m citycost --version
+          /tmp/venv/bin/python -m citycost --help > /dev/null

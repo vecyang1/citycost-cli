@@ -220,8 +220,34 @@ the fallback path serves the same units the direct path would have.
 ## Open / unverified
 
 - Apify actor pricing: read, not run.
-- Whether every non-cost Numbeo vertical supports `?title=` history — under
-  verification; the client must degrade to "current only" where it does not.
+- ~~Whether every non-cost Numbeo vertical supports `?title=` history.~~
+  **Closed 2026-08-25 — measured, all seven do.** Each vertical's oldest
+  snapshot was fetched against its newest and the tables differ in every case,
+  so `?title=` is honoured and not silently ignored:
+
+  | vertical | snapshots | oldest | newest | rows old → new |
+  |---|---|---|---|---|
+  | cost-of-living | 31 | 2009 | 2026-mid | 41 → 547 |
+  | property | 31 | 2009 | 2026-mid | 65 → 393 |
+  | crime | 26 | 2014 | 2026-mid | 335 → 401 |
+  | health-care | 26 | 2014 | 2026-mid | 132 → 323 |
+  | pollution | 26 | 2014 | 2026-mid | 260 → 347 |
+  | quality-of-life | 26 | 2014 | 2026-mid | 95 → 305 |
+  | traffic | 26 | 2014 | 2026-mid | 121 → 341 |
+
+  The planned degrade-to-current path is therefore **not needed today**, and
+  the answer above is the kind that rots: a parameter can stop being honoured
+  without ever starting to error. Numbeo would answer 200 with the current
+  table for every `title=`, the snapshot `<select>` this client reads its list
+  from would still be on the page, and `trend` would return a complete series
+  with `found: true` on every point — a flat line read as a stable city.
+
+  So the finding is pinned by a predicate rather than by this paragraph:
+  `rankings._is_one_table_repeated` refuses to present a series whose found
+  points share identical metrics **and** an identical table size, and `trend`
+  exits non-zero saying so. Table size is what makes that safe to assert —
+  a genuinely unchanging city still sits in tables of different sizes, because
+  the snapshots are not monotonic (2022 carried 578 cities, 2026-mid 547).
 - nomads → Numbeo slug mapping is a **guess the caller verifies by fetching**,
   because neither site publishes a mapping. A hardcoded table would be wrong
   for every city nobody has hit yet.

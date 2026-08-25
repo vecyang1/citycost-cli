@@ -73,6 +73,17 @@ publishes aggregates only. Either alone is a half-tool.
   Until 1.2.0 `raw` followed it too, so `raw["taxi_km"]` was `null` for a row
   that had parsed correctly and been dropped by a table option: an absence that
   reads as "unpriced" when it meant "not requested".
+- **A trend has to be able to prove it is history.** `?title=` selects a
+  snapshot, and a parameter can be accepted and quietly *ignored* rather than
+  refused — which here has no error to fall into: every snapshot would return
+  the current table, the series would come back complete with `found: true`
+  throughout, and a flat line would read as a remarkably stable city. `trend`
+  refuses that: if three or more snapshots return identical metrics **and** an
+  identical table size, it says so on stderr and exits non-zero. Table size is
+  what makes the check safe — a genuinely unchanging city still sits in tables
+  of different sizes, because Numbeo's snapshots are not monotonic (2022
+  carried 578 cities, 2026-mid carries 547). Measured 2026-08-25: all seven
+  verticals honour `?title=` today, so this is an alarm for drift.
 - **Two absences, two messages.** "a row label drifted upstream" (fix: this
   repo) and "nobody has priced it" (fix: nothing) never share a sentence.
 - **Ambiguity is returned, not resolved.** Ten city names map to two or more
@@ -89,7 +100,17 @@ pip install git+https://github.com/vecyang1/citycost-cli
 ```
 
 If `citycost: command not found` afterwards, your installer's bin directory is
-not on `PATH` — `pipx ensurepath`, then open a new shell.
+not on `PATH` — `pipx ensurepath`, then open a new shell. Until that new shell
+exists, the same program is reachable from the interpreter you already have:
+
+```bash
+python -m citycost doctor
+```
+
+That form is also the right one for a script or an agent invoking this tool,
+because it cannot pick a different copy: a `pipx` build and a source checkout
+both answer to the name `citycost`, and when they disagree the run still looks
+like evidence.
 
 ## Being a good citizen
 
