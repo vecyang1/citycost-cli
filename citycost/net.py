@@ -76,6 +76,44 @@ def _decode(raw: bytes, content_type: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def retry_after(headers) -> str:
+    """Turn a `Retry-After` header into something a human can act on.
+
+    Read the server before measuring the server. Numbeo's 429 states exactly
+    when the block lifts — `Retry-After: Tue, 1 Sep 2026 08:00:00 +0200`, a
+    **seven day** ban — and this client spent an afternoon probing to conclude
+    "duration unknown, at least an hour" while the answer was in every one of
+    those responses. The measurement was not wrong, it was unnecessary; the
+    remedy built on it ("wait and retry") was wrong.
+
+    Both RFC forms occur: an HTTP-date and a delta in seconds.
+    """
+    raw = (headers.get("Retry-After") or "").strip() if headers else ""
+    if not raw:
+        return ""
+    import datetime
+    import email.utils
+    when = None
+    if raw.isdigit():
+        when = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(seconds=int(raw)))
+    else:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return f"server says Retry-After: {raw}"
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    left = when - datetime.datetime.now(datetime.timezone.utc)
+    secs = left.total_seconds()
+    if secs <= 0:
+        return f"blocked until {when.isoformat(timespec='minutes')} (now past)"
+    span = (f"{secs / 86400:.1f} days" if secs >= 86400
+            else f"{secs / 3600:.1f} hours" if secs >= 3600
+            else f"{secs / 60:.0f} minutes")
+    return f"blocked until {when.isoformat(timespec='minutes')} — {span} away"
+
+
 def _unwrap(raw: bytes, encoding: str) -> bytes:
     enc = (encoding or "").lower()
     if "gzip" in enc:
@@ -206,10 +244,15 @@ def _fetch(url: str, *, timeout: int, data: bytes | None, method: str,
                 f"set {var}{how} in {fallback.config_path()} "
                 f"— `citycost doctor` reports what is wired")
             raise
-        render.note(
-            f"  ! {url.split('/')[2]} refused this client (HTTP {exc.status})"
-            f" -> retrying through the configured fetcher (spends its "
-            f"bandwidth)")
+        # Print the exception's own message rather than rebuilding a summary:
+        # it already carries the server's stated deadline, and a second,
+        # shorter sentence about the same event is how the two drift apart.
+        # "spends its bandwidth" was dropped once a fetcher could be free —
+        # the client does not know what the configured command costs, and
+        # asserting a cost it cannot see is the kind of confident detail a
+        # reader believes.
+        render.note(f"  ! {exc.message}\n"
+                    f"    -> rerouting through the configured fetcher")
         return _via_fetcher(url, cfg, timeout, data=data, method=method,
                             blocked=exc.status)
 
@@ -234,10 +277,21 @@ def _http_get_once(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> str:
     except urllib.error.HTTPError as exc:
         # 429 and 403 have different remedies and must not read alike.
         if exc.code == 429:
+            until = retry_after(exc.headers)
+            long_block = "days" in until or "hours" in until
             raise SourceUnavailable(
-                f"{url} rate-limited (HTTP 429)",
-                "lower concurrency, widen --max-age so cached figures are "
-                "reused, or configure an external fetcher (citycost doctor)",
+                f"{url} refused this client (HTTP 429)"
+                + (f" — {until}" if until else ""),
+                # The remedy depends on the number the server gave, because
+                # "wait" and "you cannot wait" are different instructions and
+                # only the header knows which one applies.
+                ("this is an address-level block, not a pause: a real browser "
+                 "on this network is refused too. Use another network or "
+                 "configure an external fetcher (citycost doctor); do not run "
+                 "concurrent agents against this host"
+                 if long_block else
+                 "lower concurrency, widen --max-age so cached figures are "
+                 "reused, or configure an external fetcher (citycost doctor)"),
                 status=429) from exc
         raise SourceUnavailable(
             f"{url} returned HTTP {exc.code}",
@@ -296,8 +350,10 @@ def _http_post_json_once(url: str, payload: dict, *,
         except Exception:
             pass
         if exc.code == 429:
+            until = retry_after(exc.headers)
             raise SourceUnavailable(
-                f"{url} rate-limited (HTTP 429) {detail}".strip(),
+                f"{url} rate-limited (HTTP 429)"
+                + (f" — {until}" if until else "") + f" {detail}".rstrip(),
                 "this endpoint is explicitly not a bulk source; slow down, or "
                 "configure an external fetcher (citycost doctor)",
                 status=429) from exc

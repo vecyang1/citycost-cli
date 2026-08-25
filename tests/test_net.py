@@ -168,5 +168,75 @@ class TestFmtAge(unittest.TestCase):
         self.assertEqual(net.fmt_age(300000), "3.5d")
 
 
+class RetryAfterIsReadNotGuessed(unittest.TestCase):
+    """Numbeo's 429 states when the block lifts. This client measured instead.
+
+    Measured 2026-08-25: `Retry-After: Tue, 1 Sep 2026 08:00:00 +0200` — a
+    seven-day, address-level ban — while the docs said "duration unknown, at
+    least an hour" and the remedy said "wait and retry". The measurement was
+    not wrong, it was unnecessary; the remedy built on it was wrong, because
+    "wait" and "you cannot wait" are different instructions.
+    """
+
+    def test_an_http_date_becomes_a_deadline_and_a_span(self):
+        import datetime
+        import email.utils
+        when = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(days=7))
+        out = net.retry_after({"Retry-After": email.utils.format_datetime(when)})
+        self.assertIn("blocked until", out)
+        self.assertIn("days", out)
+
+    def test_delta_seconds_is_the_other_legal_form(self):
+        out = net.retry_after({"Retry-After": "7200"})
+        self.assertIn("hours", out)
+
+    def test_a_past_deadline_is_not_rendered_as_negative_time(self):
+        out = net.retry_after({"Retry-After": "Tue, 1 Sep 2020 08:00:00 +0200"})
+        self.assertIn("now past", out)
+
+    def test_an_unparseable_value_is_repeated_verbatim_not_dropped(self):
+        """Better to hand the reader the server's own string than to swallow
+        a header we failed to parse."""
+        self.assertIn("soon-ish", net.retry_after({"Retry-After": "soon-ish"}))
+
+    def test_no_header_is_empty_not_a_guess(self):
+        self.assertEqual(net.retry_after({}), "")
+        self.assertEqual(net.retry_after(None), "")
+
+    def test_a_long_block_changes_the_remedy(self):
+        """A week-long address ban must not be answered with 'lower
+        concurrency and retry' — that is a right answer to a different
+        question, and it is what sent this session probing for an hour."""
+        import datetime
+        import email.utils
+        import urllib.error
+        when = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(days=7))
+        hdrs = {"Retry-After": email.utils.format_datetime(when)}
+
+        def blocked(*a, **k):
+            raise urllib.error.HTTPError("http://t/", 429, "no", hdrs, None)
+
+        with mock.patch.object(net.urllib.request, "urlopen", blocked):
+            with self.assertRaises(SourceUnavailable) as ctx:
+                net.http_get("http://t/")
+        self.assertIn("days", ctx.exception.message)
+        self.assertIn("another network", ctx.exception.remedy)
+        self.assertNotIn("lower concurrency", ctx.exception.remedy)
+
+    def test_a_short_block_keeps_the_slow_down_remedy(self):
+        import urllib.error
+        hdrs = {"Retry-After": "120"}
+
+        def blocked(*a, **k):
+            raise urllib.error.HTTPError("http://t/", 429, "no", hdrs, None)
+
+        with mock.patch.object(net.urllib.request, "urlopen", blocked):
+            with self.assertRaises(SourceUnavailable) as ctx:
+                net.http_get("http://t/")
+        self.assertIn("lower concurrency", ctx.exception.remedy)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -320,6 +320,24 @@ class FetcherContract(TransportBase):
         with open(counter) as fh:
             self.assertEqual(fh.read(), str(fallback.TRANSPORT_RETRIES + 1))
 
+    def test_the_reroute_note_carries_the_servers_own_deadline(self):
+        """One event, one sentence. A second summary written beside the first
+        is what drifts: the note said "spends its bandwidth" for a fetcher the
+        client cannot see the price of, and said nothing about the seven-day
+        deadline the server had stated in the same response."""
+        os.environ[fallback.GET_CMD_ENV] = CMD_OK
+        said = []
+        exc = SourceUnavailable(
+            "numbeo.com refused this client (HTTP 429) — blocked until "
+            "2026-09-01T08:00+02:00 — 7.1 days away", "use another network",
+            status=429)
+        with mock.patch.object(net, "_http_get_once", side_effect=exc):
+            with mock.patch.object(net.render, "note", said.append):
+                net.http_get(URL)
+        joined = " ".join(said)
+        self.assertIn("7.1 days away", joined)
+        self.assertNotIn("spends its bandwidth", joined)
+
     def test_the_backoff_table_covers_every_attempt(self):
         """An off-by-one here is an IndexError on the last retry — i.e. the
         transport failure turns into a crash instead of a clean error, and only

@@ -94,9 +94,17 @@ worse. Widening `--max-age` turns a repeat sweep into zero requests.
 
 ### When a source refuses you anyway
 
-Numbeo's 429 is not transient. Measured 2026-08-25: the load that caused it
-stopped at 09:25 and the same IP was still refused at 10:39, and still refused
-when measurement ended. Waiting is not a plan.
+Numbeo's 429 is not a pause. It states its own length:
+
+```
+Retry-After: Tue, 1 Sep 2026 08:00:00 +0200      # a seven-day ban
+```
+
+and it is keyed on your **address**, not your client — the same request with a
+real Chrome TLS fingerprint from the same machine gets the identical response,
+so a browser on that network is refused too. citycost reads that header, puts
+the deadline in the error, and picks its advice from it: "lower concurrency and
+retry" is useless when you cannot come back for a week.
 
 So citycost will **reroute automatically** — but only through a fetcher you
 name, and only after the free direct path was tried and refused:

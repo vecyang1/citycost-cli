@@ -86,12 +86,38 @@ same IP was **still 429 thirty minutes later**. nomads.com blocked at the same
 time and states its budget in the 429 body: `Rate limited: 60 requests/hour per
 IP`.
 
-**Re-measured the same day.** The concurrent readers stopped at ~09:25 +0700;
-a single direct probe at **10:39 was still 429** — over an hour — and was still
-refused when measurement ended. So the floor is at least an hour and the true
-duration remains **unknown and longer**. Treat the block as expensive, not
-transient. This is the most important operational fact about the source, and it
-decides four things in the client:
+**CORRECTION, same day: the duration was never unknown — we had not read the
+header.** The paragraph here previously said "the floor is at least an hour and
+the true duration remains unknown and longer", derived by probing. Numbeo's 429
+response states it outright, in every one of those responses:
+
+```
+HTTP/1.1 429
+Retry-After: Tue, 1 Sep 2026 08:00:00 +0200
+Vary: user-agent,accept-encoding
+Set-Cookie: LivingCost=9-43597-9-ip-<the client address>
+```
+
+That is a **seven-day, address-level ban**, not a pause. Measuring how high the
+wall is, while a sign on the wall gives the number, is the mistake — and the
+remedy built on the measurement ("wait and retry, lower concurrency") was wrong
+in a way the measurement itself could not reveal: *you cannot wait*.
+
+Two further facts, each from a single probe:
+
+- **It is the address, not the client.** The same request through `curl_cffi`
+  with a real Chrome TLS fingerprint and no proxy, from the same machine,
+  returns the identical 429 and the identical `Retry-After`. A browser on that
+  network is refused too. So TLS impersonation does not help here, and nothing
+  about the client's shape is worth tuning.
+- **The ban does not slide.** Two probes minutes apart returned the *same*
+  deadline, so further requests do not extend it. Useful, because the opposite
+  assumption makes any diagnosis feel too expensive to perform.
+
+`citycost` now parses `Retry-After` and puts the deadline in the error, and
+picks its remedy from it: a block measured in days says "use another network or
+a fetcher", never "lower concurrency and retry". This is the most important
+operational fact about the source, and it decides four things in the client:
 
 1. **A per-host minimum interval** (`net.MIN_INTERVAL`, 1.1s for numbeo.com,
    1.5s for nomads.com). Per-process and per-host, so an interactive run never
@@ -123,6 +149,15 @@ decides four things in the client:
      run ends with a provenance count, and `--json` consumers can read the
      events. A **404 never reroutes**: a wrong slug through a residential proxy
      is the same wrong slug, bought.
+
+**Two egresses, cheapest first.** A fetcher does not have to be a paid proxy.
+Measured 2026-08-25 while the local address was banned, `curl` from three
+different rented hosts: two answered **503** — Numbeo blocks those datacenter
+ranges outright — and one answered **200**. So a machine you already rent is
+worth testing per site before spending per-GB proxy bandwidth, and the
+per-machine config on this developer's box chains them: own host first,
+residential proxy only if it fails. Neither the hosts nor the chain live in this
+repository.
 
 **The client still ships no proxy.** `CITYCOST_FETCH_CMD` / `CITYCOST_POST_CMD`
 name an external command: `{url}` in, request body on stdin for POST, response

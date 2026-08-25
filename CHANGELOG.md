@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.1.1 — 2026-08-25 — the server had been stating the ban length all along
+
+**Correction to 1.1.0's own reasoning.** 1.1.0 justified the automatic reroute
+by *measuring* that Numbeo's block outlived its cause by more than an hour, and
+recorded the duration as "unknown and longer". It was never unknown. Every one
+of those 429 responses carried:
+
+```
+Retry-After: Tue, 1 Sep 2026 08:00:00 +0200
+```
+
+A **seven-day, address-level ban**. The policy 1.1.0 shipped happens to be
+right — more right than the argument for it — but the client was reading the
+wall instead of the sign on it, and its remedy string still said "lower
+concurrency, widen --max-age and retry", which is a right answer to a different
+question when you cannot come back for a week.
+
+- `net.retry_after()` parses both legal forms (HTTP-date and delta-seconds) and
+  the error now names the deadline and how far away it is.
+- The **remedy is chosen from that number**: a block measured in hours or days
+  says "this is an address-level block, not a pause — a real browser on this
+  network is refused too; use another network or configure a fetcher". Only a
+  short block still says "slow down".
+- The reroute note now prints the exception's own message instead of a second,
+  shorter summary of the same event — and stopped claiming the reroute "spends
+  its bandwidth", which the client cannot know and which is false whenever the
+  configured fetcher is free.
+
+Also measured, each with one probe: the same request with a **real Chrome TLS
+fingerprint from the same address** gets the identical 429, so this is the
+address and not the client shape; and two probes minutes apart return the
+*same* deadline, so the ban does not slide when you keep asking.
+
 ## 1.1.0 — 2026-08-25 — a 429 reroutes instead of failing
 
 **Policy reversal, on a measurement.** 1.0.0 argued that a proxy fallback must
@@ -97,7 +130,7 @@ being loud, not by refusing to act.
   already set and is looking straight at, is a right answer to the wrong
   question.
 
-**Tests** 125 → 180. `tests/_sandbox.py` now also pins `CITYCOST_CONFIG` into
+**Tests** 125 → 188. `tests/_sandbox.py` now also pins `CITYCOST_CONFIG` into
 the sandbox and removes the three command variables — a location wants to be
 *set somewhere disposable*, a switch wants to be *absent*; without both, a unit
 test would have run through the developer's real, paid proxy. Landed in the
