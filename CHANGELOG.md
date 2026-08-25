@@ -54,6 +54,23 @@ being loud, not by refusing to act.
 - Removed an unreachable "is a fetcher configured" guard in `net._via_fetcher`:
   `_fetch` refuses first, so it could not fire, and a guard that cannot fire is
   one a reader trusts and a mutation test grades as covered.
+- **The cache fingerprint was blind to the fix above.** `SCHEMA` hashed only
+  `TARGETS.values()` — the field names — while the thing that decides what a
+  cached payload *contains* is the label prefixes, i.e. the keys. So correcting
+  `Taxi 1km` changed no fingerprint, every entry parsed under the broken
+  spelling stayed "current", and `doctor` still reported 20/21 for Prague after
+  the bug was gone. A fingerprint blind to a fix is worse than none: it
+  certifies the stale answer. Now covers keys, values and the conversion
+  factors, via a `schema_for()` the tests call rather than restate.
+- **`doctor` failed the whole transport check on one flaky proxy attempt.**
+  Residential exit nodes die mid-request — measured: the probe failed once and
+  the identical command succeeded seconds later. The health check now makes two
+  attempts and reports *"1 of 2 attempts failed"* alongside `ok`; two failures
+  is still a FAIL. The data path is still attempted exactly once, because there
+  each retry costs bandwidth and a 559-byte health check does not.
+- **A long error destroyed the `doctor` table.** The text renderer pads every
+  column to its widest cell, so one 300-character fetcher error pushed the
+  other rows off the screen. Detail is capped for the table; `--json` keeps it.
 - **A run where every city failed exited 0.** With the source blocked, `--json`
   produced a complete, well-shaped payload of nulls under a success code, which
   a caller reads as "these cities are unpriced" rather than "nothing was read".
@@ -66,7 +83,7 @@ being loud, not by refusing to act.
   already set and is looking straight at, is a right answer to the wrong
   question.
 
-**Tests** 125 → 168. `tests/_sandbox.py` now also pins `CITYCOST_CONFIG` into
+**Tests** 125 → 176. `tests/_sandbox.py` now also pins `CITYCOST_CONFIG` into
 the sandbox and removes the three command variables — a location wants to be
 *set somewhere disposable*, a switch wants to be *absent*; without both, a unit
 test would have run through the developer's real, paid proxy. Landed in the

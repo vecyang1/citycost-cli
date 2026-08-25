@@ -447,6 +447,12 @@ def cmd_find(args) -> int:
 #: *works*, not that a variable is set — an enabled-but-broken escape hatch is
 #: discovered at the exact moment it was needed, which is the worst time.
 PROBE_URL = "https://example.com/"
+PROBE_ATTEMPTS = 2
+
+#: The text table pads every column to its widest cell, so one 300-character
+#: error message turns the whole report into a horizontal scroll and hides the
+#: rows either side of it. `--json` keeps the full text.
+DETAIL_WIDTH = 120
 
 
 def _transport_check() -> tuple[str, str, str]:
@@ -468,13 +474,27 @@ def _transport_check() -> tuple[str, str, str]:
     if cfg.mode == "never":
         return ("fallback fetcher", "off",
                 f"configured (from {cfg.get_source}) but {'; '.join(where)}")
-    try:
-        body = fallback.run(PROBE_URL, cfg.get_cmd, 30, method="GET")
-    except CitycostError as exc:
-        return ("fallback fetcher", "FAIL", f"{exc.message} | {exc.remedy}")
+    # Two attempts, and say when the first one failed. A residential exit node
+    # dying mid-request is ordinary — measured: this probe failed once and the
+    # same command succeeded seconds later — so one flaky attempt is not a
+    # verdict on the configuration. Two failures is. The data path is still
+    # attempted exactly once, because there each retry costs bandwidth; a 559B
+    # health check does not.
+    attempts = []
+    for _ in range(PROBE_ATTEMPTS):
+        try:
+            body = fallback.run(PROBE_URL, cfg.get_cmd, 30, method="GET")
+            break
+        except CitycostError as exc:
+            attempts.append(f"{exc.message} | {exc.remedy}")
+    else:
+        return ("fallback fetcher", "FAIL",
+                f"{PROBE_ATTEMPTS} attempts failed: {attempts[-1]}")
+    flaky = (f"{len(attempts)} of {len(attempts) + 1} attempts failed "
+             f"(residential exits are flaky); " if attempts else "")
     have_post = "POST ok" if cfg.post_cmd else "POST NOT configured"
     return ("fallback fetcher", "ok",
-            f"GET probe {len(body)}B from {PROBE_URL}; {have_post}; "
+            f"{flaky}GET probe {len(body)}B from {PROBE_URL}; {have_post}; "
             f"{'; '.join(where)}")
 
 
@@ -525,9 +545,14 @@ def cmd_doctor(args) -> int:
             {"check": c, "status": s, "detail": d} for c, s, d in checks]})
         return 0 if ok else 1
     print(render.text_table(["Check", "Status", "Detail"],
-                            [[c, s, d] for c, s, d in checks],
+                            [[c, s, _short(d)] for c, s, d in checks],
                             color=not args.no_color))
     return 0 if ok else 1
+
+
+def _short(text: str, width: int = DETAIL_WIDTH) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[:width - 1] + "\u2026"
 
 
 def cmd_cache(args) -> int:

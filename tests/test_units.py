@@ -143,5 +143,39 @@ class MeasurementSystemParity(unittest.TestCase):
         self.assertEqual(m["utilities"], i["utilities"])
 
 
+class CacheFingerprint(unittest.TestCase):
+    """The fingerprint must change when anything that shapes a cached payload
+    changes. It covered only `TARGETS.values()`, so the taxi *prefix* fix
+    changed nothing and stale entries parsed under the broken spelling were
+    still served as current — the cache certifying the bug after the fix."""
+
+    def _schema_with(self, targets=None, conversions=None):
+        # Calls the shipped function rather than restating its formula: a copy
+        # here would have to be edited alongside any real change, and would then
+        # agree with it by construction instead of checking it.
+        return prices.schema_for(
+            prices.TARGETS if targets is None else targets,
+            prices.IMPERIAL_TO_METRIC if conversions is None else conversions)
+
+    def test_the_constant_is_derived_from_the_live_tables(self):
+        self.assertEqual(self._schema_with(), prices.SCHEMA)
+
+    def test_renaming_a_label_prefix_changes_the_fingerprint(self):
+        broken = dict(prices.TARGETS)
+        del broken["Taxi 1 km"]
+        broken["Taxi 1km"] = "taxi_km"
+        self.assertNotEqual(self._schema_with(targets=broken), prices.SCHEMA)
+
+    def test_changing_a_conversion_factor_changes_the_fingerprint(self):
+        other = dict(prices.IMPERIAL_TO_METRIC)
+        other["taxi_km"] = (1.0, "per mile", "per km")
+        self.assertNotEqual(self._schema_with(conversions=other), prices.SCHEMA)
+
+    def test_adding_a_metric_changes_the_fingerprint(self):
+        more = dict(prices.TARGETS)
+        more["Something New"] = "something_new"
+        self.assertNotEqual(self._schema_with(targets=more), prices.SCHEMA)
+
+
 if __name__ == "__main__":
     unittest.main()

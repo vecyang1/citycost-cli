@@ -164,5 +164,72 @@ class CompareExitStatus(unittest.TestCase):
         }), 0)
 
 
+class DoctorTransportCheck(unittest.TestCase):
+    """`doctor` must prove the fetcher works, and must not cry wolf.
+
+    A residential exit node dying mid-request is ordinary — measured: this very
+    probe failed once and the same command succeeded seconds later. Reporting
+    FAIL on one flaky attempt trains its reader to ignore the row, which is
+    worse than not having the row.
+    """
+
+    def test_a_single_flaky_attempt_is_not_a_verdict(self):
+        calls = []
+
+        def flaky(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise cli.CitycostError("exit node died", "retry")
+            return "x" * 559
+
+        with mock.patch.object(cli.fallback, "run", flaky):
+            with mock.patch.object(cli.fallback, "settings",
+                                   return_value=_cfg(get="f {url}")):
+                name, status, detail = cli._transport_check()
+        self.assertEqual(status, "ok")
+        self.assertIn("1 of 2 attempts failed", detail)
+
+    def test_two_failures_is_a_verdict(self):
+        with mock.patch.object(cli.fallback, "run",
+                               side_effect=cli.CitycostError("dead", "fix it")):
+            with mock.patch.object(cli.fallback, "settings",
+                                   return_value=_cfg(get="f {url}")):
+                name, status, detail = cli._transport_check()
+        self.assertEqual(status, "FAIL")
+        self.assertIn("2 attempts failed", detail)
+
+    def test_no_fetcher_is_off_not_failed(self):
+        with mock.patch.object(cli.fallback, "settings",
+                               return_value=_cfg(get="")):
+            name, status, detail = cli._transport_check()
+        self.assertEqual(status, "off")
+        self.assertIn("CITYCOST_FETCH_CMD", detail)
+
+    def test_a_long_detail_cannot_wreck_the_table(self):
+        """The text table pads every column to its widest cell, so one 300-char
+        error turns the report into a horizontal scroll and hides its
+        neighbours."""
+        self.assertEqual(len(cli._short("x" * 400)), cli.DETAIL_WIDTH)
+        self.assertEqual(cli._short("short"), "short")
+        self.assertEqual(cli._short("a\n  b"), "a b")
+
+
+class _cfg:
+    """Minimal stand-in for fallback.Settings."""
+
+    def __init__(self, get="", post="", mode="auto"):
+        self.get_cmd, self.post_cmd, self.mode = get, post, mode
+        self.get_source = self.post_source = self.mode_source = "config"
+        self.config_status = "missing"
+        self.config_file = "/tmp/nowhere/fetch.conf"
+
+    @property
+    def available(self):
+        return bool(self.get_cmd)
+
+    def cmd_for(self, method):
+        return self.post_cmd if method.upper() == "POST" else self.get_cmd
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -125,8 +125,24 @@ LABELS: dict[str, str] = {
     "net_salary": "Avg Net Salary", "mortgage_rate_pct": "Mortgage Rate %",
 }
 
-SCHEMA = hashlib.sha256(
-    ("|".join(sorted(set(TARGETS.values()))) + "|v3-units").encode()).hexdigest()[:12]
+#: Cache fingerprint. It must cover **everything that decides what a cached
+#: payload contains** — which is the label prefixes (the keys), not only the
+#: field names they produce (the values).
+#:
+#: It hashed the values alone until 2026-08-25. Fixing the taxi prefix from
+#: "Taxi 1km" to "Taxi 1 km" therefore changed no fingerprint at all, so every
+#: entry parsed under the broken spelling stayed "current" and kept reporting
+#: the row as missing after the bug was gone. A fingerprint blind to the fix is
+#: worse than no fingerprint: it certifies the stale answer.
+def schema_for(targets: dict, conversions: dict) -> str:
+    return hashlib.sha256("|".join([
+        *(f"{k}->{v}" for k, v in sorted(targets.items())),
+        *(f"{k}*{f_}" for k, (f_, _a, _b) in sorted(conversions.items())),
+        "v4-units",
+    ]).encode()).hexdigest()[:12]
+
+
+SCHEMA = schema_for(TARGETS, IMPERIAL_TO_METRIC)
 
 _NUM = re.compile(r"[\d,]+\.?\d*")
 
