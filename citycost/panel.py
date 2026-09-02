@@ -167,6 +167,25 @@ def cmd_harvest(args) -> int:
     receives the partial report on the runs most worth inspecting.
     """
     report = harvest.plan(args.indexes or None, max_age=args.max_age)
+    if args.resolve:
+        # The cost of learning was already printed by the plan as
+        # `list_requests`; this spends exactly that and nothing else, so the
+        # table below is the one the run would spend rather than `unknown`.
+        unknown = list(report["unknown_verticals"])
+        report = harvest.resolve(report)
+        still = list(report["unknown_verticals"])
+        learned = [v for v in unknown if v not in still]
+        if not unknown:
+            render.note("  --resolve: every denominator was already known; "
+                        "no list request was sent")
+        else:
+            render.note(f"  --resolve: learned {len(learned)} snapshot "
+                        f"list(s) in {len(unknown)} request(s)"
+                        + (f": {', '.join(learned)}" if learned else ""))
+        if still:
+            render.note(f"  ! still unknown after resolving: {', '.join(still)}"
+                        f" — upstream answered but named no snapshot; "
+                        f"--execute will refuse until it does")
     if not args.json:
         harvest.render_plan(report, color=not args.no_color)
     if not args.execute:

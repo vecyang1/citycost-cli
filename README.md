@@ -83,7 +83,9 @@ Historical snapshots do not change, so fetching them repeatedly is the whole
 waste. `harvest` prints a plan first and fetches nothing without `--execute`:
 
 ```bash
-citycost harvest
+citycost harvest                                  # plan: zero requests
+citycost harvest --resolve                        # learn the lists it needs, plan again
+citycost harvest --resolve --execute              # then spend exactly that plan
 citycost harvest --index cost-of-living --execute
 ```
 
@@ -93,6 +95,20 @@ files, all written under the previous schema" cost 52 and 192 requests, and a
 boolean would make them the same sentence. `current` is excluded and the plan
 says so on its own line: it is the one URL in the family that legitimately
 moves.
+
+The denominator is the snapshot list Numbeo publishes per vertical, and the
+plan reads it from cache only — a planner that could fetch would be spending
+the consent it was about to ask for. So on a first run, and on any run a day
+after the last, the plan says `unknown` and states what learning it costs:
+seven requests. `--resolve` spends exactly those, in one paced process, and
+prints the plan again with every cell known; it fetches no tables. With
+`--execute` as well, the plan it printed is the plan it then spends.
+
+A sweep can be run gentler than an interactive read. `CITYCOST_MIN_INTERVAL=2.5`
+raises the gap between requests for that process, and the plan quotes the gap
+it will actually sleep, with its source. The variable can only *raise* the gap:
+a value below the built-in floor has no effect, and the plan says so rather
+than silently ignoring it.
 
 It aborts on the first refusal rather than grinding — the block is address
 level and does not slide — and it holds a lock, because `net`'s pacing is
@@ -293,3 +309,8 @@ python -m unittest discover -t . -s tests -v   # no network, sandboxed
 
 The suite is offline by design. A green CI that depended on numbeo.com being up
 would be reporting "the site answered", not "the code is right".
+
+The pipx copy on `PATH` is built from whatever the tree held when it was
+installed and does not follow the source. After a change here, `pipx reinstall
+citycost` (the spec is this directory) — or use `python -m citycost`, which
+runs the tree you are looking at.

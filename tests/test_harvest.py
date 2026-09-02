@@ -21,7 +21,8 @@ from unittest import mock
 
 from . import _sandbox  # noqa: F401  (must be first)
 from ._harvest_case import (
-    ARCHIVE_IDS, NO_TABLE_PAGE, NOW, ONE_TABLE, HarvestCase, distinct_pages)
+    ARCHIVE_IDS, NO_TABLE_PAGE, NOW, ONE_TABLE, HarvestCase, _snapshot_page,
+    distinct_pages)
 from citycost import fallback, harvest, net, rankings
 from citycost.errors import CitycostError, SourceUnavailable
 
@@ -507,6 +508,238 @@ class TestNoSecondRecord(HarvestCase):
         self.assertEqual(on_disk - accounted, set())
         self.assertFalse((root / harvest.LOCK_NAME).exists())
 
+
+
+
+class TestResolve(HarvestCase):
+    """`--resolve` spends exactly the list requests the plan named — never a
+    table — so every denominator becomes known in one paced process. Measured
+    2026-09-02: the first live harvest began with all seven lists expired, the
+    plan said `unknown` seven times, and the remedy was seven commands."""
+
+    def _lists_only(self, ids=ARCHIVE_IDS):
+        """A transport that answers snapshot-list pages and TRAPS table pages:
+        a resolve that fetched a table would be a harvest without consent."""
+        def answer(url, **kw):
+            if "?title=" in url or "rankings_current" in url:
+                raise AssertionError(f"resolve fetched a TABLE: {url}")
+            return _snapshot_page(ids)
+        return answer
+
+    def test_resolve_sends_exactly_the_list_requests_and_the_plan_becomes_known(self):
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        self.assertEqual(len(before["unknown_verticals"]), 6)
+        self.assertEqual(before["list_requests"], 6)
+        with mock.patch.object(rankings, "http_get",
+                               side_effect=self._lists_only()) as get:
+            with contextlib.redirect_stderr(io.StringIO()):
+                after = harvest.resolve(before, now=NOW)
+        self.assertEqual(get.call_count, 6)
+        self.assertEqual(after["unknown_verticals"], [])
+        self.assertEqual(after["denominator"], 7 * len(ARCHIVE_IDS))
+        self.assertEqual(after["list_requests"], 0)
+        self.assertEqual(after["requests_planned_state"], "exact")
+        self.assertFalse(after["executed"])
+        self.assertEqual(after["requests_sent"], 0)
+
+    def test_resolve_with_every_denominator_known_sends_nothing(self):
+        for v in sorted(rankings.VERTICALS):
+            self.seed_list(v, ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        with self.transport_trap("resolve sent a request with nothing unknown"):
+            after = harvest.resolve(before, now=NOW)
+        self.assertEqual(after["denominator"], before["denominator"])
+        self.assertEqual(after["unknown_verticals"], [])
+
+    def test_resolve_keeps_the_scope_it_was_given(self):
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        before = harvest.plan(["cost-of-living", "crime"], now=NOW)
+        with mock.patch.object(rankings, "http_get",
+                               side_effect=self._lists_only()) as get:
+            with contextlib.redirect_stderr(io.StringIO()):
+                after = harvest.resolve(before, now=NOW)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual([r["vertical"] for r in after["verticals"]],
+                         ["cost-of-living", "crime"])
+        self.assertEqual(after["scope"], "subset")
+
+    def test_resolve_stops_at_the_first_refusal(self):
+        """The block is address-level and does not slide; the second list
+        request after a 429 spends the address on behalf of whoever uses it
+        next."""
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        calls = {"n": 0}
+
+        def refused(url, **kw):
+            calls["n"] += 1
+            raise SourceUnavailable(f"{url} refused this client (HTTP 429)",
+                                    "use another network", status=429)
+
+        with mock.patch.object(rankings, "http_get", side_effect=refused):
+            with self.assertRaises(CitycostError) as ctx:
+                harvest.resolve(before, now=NOW)
+        self.assertEqual(calls["n"], 1)
+        self.assertIn("list 1 of 6", ctx.exception.message)
+        self.assertNotIsInstance(ctx.exception, harvest.HarvestAborted)
+
+    def test_a_rerouted_list_read_refuses_to_continue(self):
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        calls = {"n": 0}
+
+        def maybe_rerouted(url, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                fallback.record(url, 429, "GET")
+            return _snapshot_page(ARCHIVE_IDS)
+
+        with mock.patch.object(rankings, "http_get", side_effect=maybe_rerouted):
+            with self.assertRaises(CitycostError) as ctx:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    harvest.resolve(before, now=NOW)
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("repair, not a licence", ctx.exception.remedy)
+
+    def test_resolve_under_fetch_mode_always_is_refused_before_request_one(self):
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        with mock.patch.dict(os.environ, {"CITYCOST_FETCH_MODE": "always"}), \
+             self.transport_trap("resolve sent a request under always"):
+            with self.assertRaises(CitycostError) as ctx:
+                harvest.resolve(before, now=NOW)
+        self.assertIn("repair, not a licence", ctx.exception.remedy)
+
+    def test_resolve_refuses_a_spent_plan_and_a_non_plan(self):
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        report = self.plan_one()
+        with mock.patch.object(rankings, "http_get",
+                               side_effect=distinct_pages(3)):
+            with contextlib.redirect_stderr(io.StringIO()):
+                spent = harvest.run(report)
+        with self.transport_trap("resolved a spent plan"):
+            with self.assertRaises(CitycostError):
+                harvest.resolve(spent, now=NOW)
+            with self.assertRaises(CitycostError):
+                harvest.resolve({"not": "a plan"}, now=NOW)
+
+    def test_the_command_resolves_then_prints_the_known_plan(self):
+        from citycost import cli
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rankings, "http_get",
+                               side_effect=self._lists_only()) as get:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["harvest", "--resolve",
+                               "--index", "cost-of-living", "--index", "crime"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(get.call_count, 1)          # only crime was unknown
+        self.assertNotIn("unknown", out.getvalue())
+        self.assertIn("learned 1 snapshot list", err.getvalue())
+        self.assertIn("plan only", err.getvalue())
+
+    def test_resolve_and_execute_together_spend_the_plan_that_was_printed(self):
+        from citycost import cli
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        pages = iter(distinct_pages(2 * len(ARCHIVE_IDS)))
+
+        def answer(url, **kw):
+            return next(pages) if "?title=" in url else _snapshot_page(ARCHIVE_IDS)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rankings, "http_get", side_effect=answer) as get:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["harvest", "--resolve", "--execute",
+                               "--index", "cost-of-living", "--index", "crime"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(get.call_count, 1 + 2 * len(ARCHIVE_IDS))
+        self.assertIn("harvest: planned 6", err.getvalue())
+        # The plan the user saw is the plan that was spent: no `unknown` cell
+        # reached stdout before the run began.
+        self.assertNotIn("unknown", out.getvalue())
+
+
+
+class TestResolveFailureReporting(HarvestCase):
+    """The findings a code review raised: an ordinary failure must disclose the
+    partial cache the block path already discloses, and the two `cmd_harvest`
+    notes must be exercised through the real entry point rather than trusted."""
+
+    def test_an_ordinary_failure_names_the_lists_already_learned(self):
+        """A non-blocked SourceUnavailable (a transient 500, a URLError) leaves
+        the same partial state on disk as a 429 does — a rerun skips what was
+        learned — so it must say so too. It reported nothing before this."""
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        self.assertEqual(before["unknown_verticals"][0], "crime")
+        calls = {"n": 0}
+
+        def answer(url, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _snapshot_page(ARCHIVE_IDS)       # crime list learned
+            raise SourceUnavailable("t/ returned HTTP 500", "retry later",
+                                    status=500)          # health-care 500s
+
+        with mock.patch.object(rankings, "http_get", side_effect=answer), \
+             mock.patch.object(net.time, "sleep"):
+            with self.assertRaises(CitycostError) as ctx:
+                harvest.resolve(before, now=NOW)
+        self.assertNotIsInstance(ctx.exception, harvest.HarvestAborted)
+        self.assertIn("could not learn the snapshot list for health-care",
+                      ctx.exception.message)
+        self.assertIn("list 2 of 6", ctx.exception.message)
+        # The disclosure the block path always had, now on this path too.
+        self.assertIn("1 list(s) were learned and are cached",
+                      ctx.exception.message)
+
+    def test_resolve_under_always_refuses_even_with_nothing_unknown(self):
+        """`run()` refuses `--fetch-mode always` unconditionally; `resolve`
+        used to skip that check on its all-known early return, so it was the one
+        path that quietly succeeded under a mode the tool refuses."""
+        for v in sorted(rankings.VERTICALS):
+            self.seed_list(v, ARCHIVE_IDS)
+        before = harvest.plan(now=NOW)
+        self.assertEqual(before["unknown_verticals"], [])
+        with mock.patch.dict(os.environ, {"CITYCOST_FETCH_MODE": "always"}), \
+             self.transport_trap("resolve ran under always with nothing unknown"):
+            with self.assertRaises(CitycostError) as ctx:
+                harvest.resolve(before, now=NOW)
+        self.assertIn("repair, not a licence", ctx.exception.remedy)
+
+    def test_the_all_known_note_prints_through_the_command(self):
+        from citycost import cli
+        for v in sorted(rankings.VERTICALS):
+            self.seed_list(v, ARCHIVE_IDS)
+        out, err = io.StringIO(), io.StringIO()
+        with self.transport_trap("sent a request when nothing was unknown"):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["harvest", "--resolve"])
+        self.assertEqual(rc, 0)
+        self.assertIn("every denominator was already known", err.getvalue())
+
+    def test_a_list_that_resolves_empty_is_reported_as_still_unknown(self):
+        """A list page whose <select> carries no snapshot id caches as empty,
+        so the denominator stays unknown after a successful fetch. The command
+        must say so rather than imply the plan is now complete."""
+        from citycost import cli
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        empty = ("<html><body><select name='title'>"
+                 "<option value='USD'>USD</option></select>"
+                 "<table id='t2'></table></body></html>")
+
+        def answer(url, **kw):
+            return empty if "rankings.jsp" in url and "?title=" not in url \
+                else _snapshot_page(ARCHIVE_IDS)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(rankings, "http_get", side_effect=answer), \
+             mock.patch.object(net.time, "sleep"):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["harvest", "--resolve"])
+        self.assertIn("still unknown after resolving", err.getvalue())
+        self.assertIn("learned 0 snapshot list", err.getvalue())
 
 
 if __name__ == "__main__":

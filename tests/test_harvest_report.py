@@ -212,5 +212,20 @@ class TestReportShape(HarvestCase):
 
 
 
+
+class TestUnknownDenominatorRemedy(HarvestCase):
+    def test_an_unknown_denominator_names_the_one_command_that_learns_it(self):
+        """Measured 2026-09-02, first live harvest: all seven lists had expired
+        and the remedy was seven separate `snapshots` commands — seven
+        processes, each resetting the throttle. The note now names the single
+        command; the parity gate proves that command parses."""
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        report = harvest.plan(now=NOW)
+        self.assertTrue(report["unknown_verticals"])
+        err = self.stderr_of(harvest.render_plan, report)
+        self.assertIn("citycost harvest --resolve", err)
+        self.assertIn(f"{report['list_requests']} request(s)", err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

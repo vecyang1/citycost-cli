@@ -317,5 +317,20 @@ class TestTtlHasOneOwner(HarvestCase):
 
 
 
+
+class TestPaceOverrideInThePlan(HarvestCase):
+    def test_the_pacing_floor_honours_the_environment_override(self):
+        """The consent number must track the gap that will actually be slept.
+        A plan quoting 1.1s while the throttle sleeps 2.0s under-reports the
+        time a user is agreeing to by half."""
+        import os
+        self.seed_list("cost-of-living", ARCHIVE_IDS)
+        with mock.patch.dict(os.environ, {net.MIN_INTERVAL_ENV: "2.0"}):
+            report = self.plan_one()
+        self.assertEqual(report["min_interval_s"], 2.0)
+        self.assertEqual(report["pacing_floor_s"], 6.0)
+        self.assertIn("CITYCOST_MIN_INTERVAL", report["pacing_source"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

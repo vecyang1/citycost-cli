@@ -81,15 +81,17 @@ def _list_key(vertical: str) -> str:
 
 
 def _pace_for(url: str) -> float:
-    """The per-host floor, read off `net.MIN_INTERVAL` rather than restated.
+    """The per-host gap, read off `net.min_interval` rather than restated.
 
     Naming 1.1 here would make the consent number stop tracking the throttle
     the moment somebody tuned it, and the floor is half of what the user agrees
     to: 192 x 1.1s is three and a half minutes of sleep before any response
     time, and a user who does not know that kills the run at ninety seconds.
+    Read through `net.min_interval`, not the dict, so a `CITYCOST_MIN_INTERVAL`
+    override is quoted at the gap that will actually be slept — a plan saying
+    1.1s over a run that sleeps 2.0s under-reports the wait by half.
     """
-    host = urllib.parse.urlsplit(url).netloc
-    return float(net.MIN_INTERVAL.get(host, net.DEFAULT_INTERVAL))
+    return float(net.min_interval(urllib.parse.urlsplit(url).netloc))
 
 
 def _snapshot_ids(vertical: str, list_max_age: int) -> tuple[list, dict]:
@@ -309,7 +311,8 @@ def plan(verticals=None, *, max_age: int | None = None,
     to_fetch_known = sum(r["to_fetch"] for r in known)
     to_fetch = None if unknown else to_fetch_known
     list_requests = sum(r["list_request_cost"] for r in rows)
-    pace = _pace_for(rankings._url("cost-of-living", "city", "2020", None))
+    pace_url = rankings._url("cost-of-living", "city", "2020", None)
+    pace = _pace_for(pace_url)
 
     report = {
         # `rows` is printed with the plan so a selector that silently narrows
@@ -335,7 +338,8 @@ def plan(verticals=None, *, max_age: int | None = None,
         "requests_planned": to_fetch_known + list_requests,
         "requests_planned_state": "floor" if unknown else "exact",
         "pacing_floor_s": round((to_fetch_known + list_requests) * pace, 1),
-        "min_interval_s": pace, "pacing_source": "net.MIN_INTERVAL",
+        "min_interval_s": pace,
+        "pacing_source": net.pace_source(urllib.parse.urlsplit(pace_url).netloc),
         "cached_age_min_s": min(ages) if ages else None,
         "cached_age_max_s": max(ages) if ages else None,
         "pinned": sum(r["pinned"] or 0 for r in known),

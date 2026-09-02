@@ -28,7 +28,7 @@ from . import fallback, render
 # Re-exported: `fmt_age` is a pure formatter and belongs with the other
 # formatters, but `net.fmt_age` is the name existing callers and tests use.
 from .render import fmt_age  # noqa: F401
-from .errors import SourceUnavailable
+from .errors import CitycostError, SourceUnavailable
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -139,10 +139,58 @@ MIN_INTERVAL = {"www.numbeo.com": 1.1, "nomads.com": 1.5}
 DEFAULT_INTERVAL = 0.4
 _last_hit: dict[str, float] = {}
 
+#: Raise the per-host gap for one process — `CITYCOST_MIN_INTERVAL=2.5`. Read
+#: at each request rather than at import, so a harvest can be run gentler
+#: without editing the tool and a test can set it without reloading the module.
+#: It can only RAISE: the built-in floor is what a measured ban taught, so a
+#: value below it has no effect, and `pace_source` says so rather than silently
+#: ignoring it — a parameter that is accepted and ignored is worse than one that
+#: is refused, because there is no value to read back. Added 2026-09-02 for the
+#: first live 176-request harvest, which wanted to be gentler than the floor an
+#: interactive `compare` needs.
+MIN_INTERVAL_ENV = "CITYCOST_MIN_INTERVAL"
+
+
+def _env_interval() -> float | None:
+    raw = (os.environ.get(MIN_INTERVAL_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or value != value or value < 0 or value == float("inf"):
+        raise CitycostError(
+            f"{MIN_INTERVAL_ENV}={raw!r} is not a number of seconds",
+            f"set {MIN_INTERVAL_ENV} to a non-negative number of seconds, "
+            f"e.g. 2.5, or unset it to use the built-in floor")
+    return value
+
+
+def min_interval(host: str) -> float:
+    """The gap actually slept between two requests to `host`."""
+    base = float(MIN_INTERVAL.get(host, DEFAULT_INTERVAL))
+    env = _env_interval()
+    return base if env is None else max(base, env)
+
+
+def pace_source(host: str) -> str:
+    """Where the gap came from, for a plan that quotes it as a consent number."""
+    base = float(MIN_INTERVAL.get(host, DEFAULT_INTERVAL))
+    env = _env_interval()
+    if env is None:
+        return "net.MIN_INTERVAL"
+    if env > base:
+        return (f"{MIN_INTERVAL_ENV}={env:g} (env, raised from the "
+                f"net.MIN_INTERVAL floor of {base:g}s)")
+    return (f"net.MIN_INTERVAL ({MIN_INTERVAL_ENV}={env:g} is not above the "
+            f"{base:g}s floor for {host} and has no effect — it can raise the "
+            f"gap, never lower it)")
+
 
 def _throttle(url: str) -> None:
     host = urllib.parse.urlsplit(url).netloc
-    gap = MIN_INTERVAL.get(host, DEFAULT_INTERVAL)
+    gap = min_interval(host)
     prev = _last_hit.get(host)
     if prev is not None:
         wait = gap - (time.monotonic() - prev)
@@ -268,28 +316,38 @@ def _http_get_once(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> str:
             raw = _unwrap(resp.read(), resp.headers.get("Content-Encoding", ""))
             return _decode(raw, resp.headers.get("Content-Type", ""))
     except urllib.error.HTTPError as exc:
-        # 429 and 403 have different remedies and must not read alike.
-        if exc.code == 429:
-            until = retry_after(exc.headers)
-            long_block = "days" in until or "hours" in until
+        try:
+            # 429 and 403 have different remedies and must not read alike.
+            if exc.code == 429:
+                until = retry_after(exc.headers)
+                long_block = "days" in until or "hours" in until
+                raise SourceUnavailable(
+                    f"{url} refused this client (HTTP 429)"
+                    + (f" — {until}" if until else ""),
+                    # The remedy depends on the number the server gave, because
+                    # "wait" and "you cannot wait" are different instructions
+                    # and only the header knows which one applies.
+                    ("this is an address-level block, not a pause: a real "
+                     "browser on this network is refused too. Use another "
+                     "network or configure an external fetcher (citycost "
+                     "doctor); do not run concurrent agents against this host"
+                     if long_block else
+                     f"lower concurrency, raise {MIN_INTERVAL_ENV} (the gap "
+                     f"between requests), widen --max-age so cached figures "
+                     f"are reused, or configure an external fetcher (citycost "
+                     f"doctor)"),
+                    status=429) from exc
             raise SourceUnavailable(
-                f"{url} refused this client (HTTP 429)"
-                + (f" — {until}" if until else ""),
-                # The remedy depends on the number the server gave, because
-                # "wait" and "you cannot wait" are different instructions and
-                # only the header knows which one applies.
-                ("this is an address-level block, not a pause: a real browser "
-                 "on this network is refused too. Use another network or "
-                 "configure an external fetcher (citycost doctor); do not run "
-                 "concurrent agents against this host"
-                 if long_block else
-                 "lower concurrency, widen --max-age so cached figures are "
-                 "reused, or configure an external fetcher (citycost doctor)"),
-                status=429) from exc
-        raise SourceUnavailable(
-            f"{url} returned HTTP {exc.code}",
-            "check the URL is still valid; the site may have moved or blocked "
-            "this client", status=exc.code) from exc
+                f"{url} returned HTTP {exc.code}",
+                "check the URL is still valid; the site may have moved or "
+                "blocked this client", status=exc.code) from exc
+        finally:
+            # The error wraps the response's file object. Raising past it
+            # leaves that handle to the garbage collector — a socket held until
+            # GC, and on Python 3.13+ a ResourceWarning naming this error at
+            # the moment it is collected. `code` and `headers` stay readable on
+            # the chained cause after close().
+            exc.close()
     except urllib.error.URLError as exc:
         raise SourceUnavailable(f"{url} unreachable: {exc.reason}",
                                 "check network connectivity") from exc
@@ -337,22 +395,26 @@ def _http_post_json_once(url: str, payload: dict, *,
             raw = _unwrap(resp.read(), resp.headers.get("Content-Encoding", ""))
             text = _decode(raw, resp.headers.get("Content-Type", ""))
     except urllib.error.HTTPError as exc:
-        detail = ""
         try:
-            detail = exc.read().decode("utf-8", "replace")[:200]
-        except Exception:
-            pass
-        if exc.code == 429:
-            until = retry_after(exc.headers)
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                pass
+            if exc.code == 429:
+                until = retry_after(exc.headers)
+                raise SourceUnavailable(
+                    f"{url} rate-limited (HTTP 429)"
+                    + (f" — {until}" if until else "") + f" {detail}".rstrip(),
+                    "this endpoint is explicitly not a bulk source; slow down, "
+                    "or configure an external fetcher (citycost doctor)",
+                    status=429) from exc
             raise SourceUnavailable(
-                f"{url} rate-limited (HTTP 429)"
-                + (f" — {until}" if until else "") + f" {detail}".rstrip(),
-                "this endpoint is explicitly not a bulk source; slow down, or "
-                "configure an external fetcher (citycost doctor)",
-                status=429) from exc
-        raise SourceUnavailable(f"{url} returned HTTP {exc.code} {detail}".strip(),
-                                "check the endpoint and payload shape",
-                                status=exc.code) from exc
+                f"{url} returned HTTP {exc.code} {detail}".strip(),
+                "check the endpoint and payload shape",
+                status=exc.code) from exc
+        finally:
+            exc.close()          # see _http_get_once: read first, then close
     except urllib.error.URLError as exc:
         raise SourceUnavailable(f"{url} unreachable: {exc.reason}",
                                 "check network connectivity") from exc

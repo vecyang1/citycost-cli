@@ -34,3 +34,9 @@ for _var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
 os.environ["CITYCOST_CONFIG"] = os.path.join(SANDBOX, "fetch.conf")
 for _var in ("CITYCOST_FETCH_CMD", "CITYCOST_POST_CMD", "CITYCOST_FETCH_MODE"):
     os.environ.pop(_var, None)
+
+# The pacing override is a switch too: an exported `CITYCOST_MIN_INTERVAL`
+# would change every consent number the harvest tests assert (3 x 1.1s) and
+# make the suite's arithmetic depend on the developer's shell. Removed in the
+# same change that added the variable, for the reason given above.
+os.environ.pop("CITYCOST_MIN_INTERVAL", None)

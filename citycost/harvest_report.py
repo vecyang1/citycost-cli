@@ -242,8 +242,9 @@ def render_plan(report: dict, *, color: bool = True) -> None:
         render.note(
             f"  ! denominator UNKNOWN for {', '.join(report['unknown_verticals'])}"
             f": the snapshot list is its only owner and is not cached. "
-            f"{report['list_requests']} request(s) would learn it "
-            f"(`citycost snapshots --index <vertical>`).")
+            f"`citycost harvest --resolve` learns it in "
+            f"{report['list_requests']} request(s) and prints this plan again; "
+            f"`citycost snapshots --index <vertical>` does one at a time.")
         render.note("    -> --execute refuses while any denominator is unknown: "
                     "harvesting the verticals that resolved and reporting a "
                     "total is a partial result passing as complete")

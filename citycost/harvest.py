@@ -216,6 +216,79 @@ def run(report: dict) -> dict:
         return _run_locked(report)
 
 
+def resolve(report: dict, *, now: float | None = None) -> dict:
+    """Spend exactly the list requests the plan named, then plan again.
+
+    Fetches no tables. `plan()` is structurally zero-network and `run()`
+    refuses an unknown denominator, so the first `harvest` on any machine — and
+    every one a day after the last, since a snapshot list expires on a clock —
+    ended in seven `citycost snapshots` commands: seven processes, each
+    resetting the per-process throttle, which is the shell-loop shape the
+    module docstring warns against. This is that step in one paced process,
+    under the same refusals as the run: `--fetch-mode always` is refused before
+    request one, a blocked status stops at that list, and a rerouted read
+    refuses to continue. The number spent is `report["list_requests"]`, which
+    the plan already printed as the cost of learning.
+
+    Measured 2026-09-02, the first live harvest: all seven lists had expired.
+    """
+    if not isinstance(report, dict) or "verticals" not in report:
+        raise CitycostError(
+            "harvest.resolve() takes the report harvest.plan() returned",
+            "call plan() first")
+    if report.get("executed"):
+        raise CitycostError(
+            "this plan has already been executed",
+            "call plan() again: a spent report states what the cache held "
+            "before the run, not what it holds now")
+    wanted = [r["vertical"] for r in report["verticals"]]
+    unknown = list(report.get("unknown_verticals") or [])
+    # Refused up front regardless of whether anything is unknown, so `resolve`
+    # honours the "same refusals as the run" it promises — `run()` refuses
+    # `always` unconditionally, and a `--resolve` that quietly succeeded under
+    # it would be the one path that does not.
+    if fallback.settings().mode == "always":
+        raise CitycostError(
+            "harvest refuses --fetch-mode always",
+            "the external fetcher is a repair, not a licence to sweep harder. "
+            "Run this from a network that is not blocked")
+    if not unknown:
+        return plan(wanted, max_age=report["max_age"],
+                    list_max_age=report["list_max_age"], now=now)
+    with _lock():
+        for i, vertical in enumerate(unknown, 1):
+            events_before = len(fallback.events())
+            try:
+                rankings.snapshots(vertical, max_age=0)
+            except SourceUnavailable as exc:
+                # The same partial state is on disk whichever failure this is —
+                # a rerun skips the lists already learned — so both branches say
+                # so. Reporting it only for the address-level block left the
+                # commoner failure (a transient 500, a URLError) under-informing
+                # about the identical cache.
+                learned = (f"; {i - 1} list(s) were learned and are cached"
+                           if i > 1 else "")
+                if fallback.is_blocked(exc):
+                    # Address-level and it does not slide: the next list
+                    # request spends the address for whoever uses it next.
+                    raise CitycostError(
+                        f"{exc.message} — resolving stopped at list {i} of "
+                        f"{len(unknown)} ({vertical}){learned}",
+                        exc.remedy) from exc
+                raise CitycostError(
+                    f"could not learn the snapshot list for {vertical} "
+                    f"(list {i} of {len(unknown)}){learned}: {exc.message}",
+                    exc.remedy) from exc
+            if len(fallback.events()) > events_before:
+                raise CitycostError(
+                    f"the snapshot list for {vertical} was rerouted through "
+                    f"the external fetcher (list {i} of {len(unknown)})",
+                    "the reroute is a repair, not a licence to sweep harder. "
+                    "Run the harvest from a network that is not blocked")
+    return plan(wanted, max_age=report["max_age"],
+                list_max_age=report["list_max_age"], now=now)
+
+
 class _Abort(Exception):
     """Internal: a reason to stop, raised where it is detected and converted to
     `HarvestAborted` where the partial report exists, so the detection site

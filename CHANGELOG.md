@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.5.0 — 2026-09-02 — the first harvest actually ran, and what it took to let it
+
+Numbeo's seven-day address ban stated its own deadline — `Retry-After: Tue, 1
+Sep 2026 08:00:00 +0200` — and on 2026-09-02 `citycost doctor` came back green
+with no provenance line: every read direct, none rerouted. That made `harvest
+--execute`, which had refused (correctly) on the only day anyone had tried it,
+runnable for the first time. Three things were in its way, none of them a
+crash.
+
+### `harvest --resolve` — learn the denominator in one process
+
+The plan reads each vertical's snapshot list from cache only, and a list
+expires after a day. So the first live plan said `unknown` seven times and its
+remedy was seven separate `citycost snapshots --index <vertical>` commands —
+seven processes, each resetting the per-process throttle, which is the
+shell-loop shape the harvest module's own docstring warns against. `--resolve`
+spends exactly the list requests the plan already priced, under the same
+refusals as the run (`--fetch-mode always` refused before request one, a
+blocked status stops at that list, a rerouted read refuses to continue), and
+prints the plan again with every cell known. It fetches no tables — a test
+stands a trap on every table URL — and `--resolve --execute` spends the plan it
+just printed. The unknown-denominator note now names this command; the parity
+gate proves it parses.
+
+### `CITYCOST_MIN_INTERVAL` — a sweep can be gentler than a read
+
+The 1.1s gap to numbeo.com was a constant. It is the right floor for an
+interactive `compare`, and a 176-request sweep against the host that banned
+this address a week ago wanted more room than that. The variable raises the
+per-host gap for one process; the plan quotes the gap it will actually sleep
+and where it came from, because a plan saying 1.1s over a run sleeping 2.0s
+under-reports the wait a user is agreeing to by half. It can only *raise*: a
+value below the floor has no effect and `pace_source` says so, because a
+parameter that is accepted and ignored has no value to read back. Not a number,
+negative, `nan`, `inf` — refused, naming the variable. The suite scrubs it at
+import in the same change, for the reason `tests/_sandbox.py` gives.
+
+### The transport now closes the `HTTPError` it raises past
+
+Both `except HTTPError` clauses in `net` built a `SourceUnavailable` and raised
+`from exc` without closing it. The error wraps the response's file object, so
+that handle went to the garbage collector — a socket held until GC, and on
+Python 3.13+ a `ResourceWarning: Implicitly cleaning up <HTTPError 429>` at the
+moment of collection. The suite had been printing three of those per run and
+nobody had read them as a defect. The POST path still reads the body for its
+detail first; both close in `finally`. The suite now runs clean under
+`-W error::ResourceWarning`.
+
+### Also
+
+- The 429 remedy for a short block now names `CITYCOST_MIN_INTERVAL` alongside
+  "lower concurrency", at the moment it is needed.
+- README: the pipx copy on `PATH` does not follow the source tree. Measured
+  again this release — it answered `1.3.1` to a tree that said `1.4.0`.
+- 469 tests (`MIN_TESTS` raised to 465).
+
+### Measured live, 2026-09-02 — the sweep re-earns the ban even paced
+
+The point of the new commands is to make the archive fillable. The run that
+exercised them also measured why it usually will not finish from here. `doctor`
+was green direct that morning (the 2026-08-25 ban had lifted on schedule), so
+`harvest --resolve --execute` ran with `CITYCOST_MIN_INTERVAL=2.0` — nearly
+double the interactive floor. It completed **cost-of-living** (31/31, and
+`trend Prague` reads those 12 snapshots back from cache as genuine history:
+547→218 rows, distinct values, no identical-table alarm), then at **item 43 of
+176** Numbeo answered 429 with a fresh `Retry-After` of **2026-10-01** — a new
+~30-day address ban, earned by a single, well-paced, sequential client.
+
+So the doctrine the module already carried — *a harvest needs a network that is
+not blocked* — is stronger than "do not fan out subagents": **even one polite
+client cannot sweep the archive from a banned-prone address; pacing buys items,
+not immunity.** The tool behaved exactly as designed under it: the reroute took
+that one blocked read (crime 2016-mid is cached), the run aborted at the first
+reroute rather than grinding 133 more through the proxy, capped the egress at
+one request, printed the provenance line, and exited 2 with 43 new items on
+disk that a rerun will skip. Fill the rest a few per day at the interactive
+pace, or from an unblocked network.
+
 ## 1.4.0 — 2026-08-26 — the panel can be diffed, and the archive can be kept
 
 Three things, and the first two only work together.

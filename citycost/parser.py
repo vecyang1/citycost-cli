@@ -160,6 +160,10 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--index", action="append", dest="indexes",
                    choices=sorted(rankings.VERTICALS),
                    help="limit to one vertical (repeatable); default: all")
+    h.add_argument("--resolve", action="store_true",
+                   help="spend only the list requests the plan names, so every "
+                        "denominator becomes known; fetches no tables. With "
+                        "--execute, the exact plan it prints is then spent")
     h.add_argument("--execute", action="store_true",
                    help="actually fetch; without it this prints the plan only")
     h.set_defaults(func=cli.cmd_harvest)
