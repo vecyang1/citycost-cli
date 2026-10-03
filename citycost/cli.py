@@ -457,7 +457,7 @@ def cmd_find(args) -> int:
 #: A tiny, stable, uncontroversial page. `doctor` must prove the fetcher
 #: *works*, not that a variable is set — an enabled-but-broken escape hatch is
 #: discovered at the exact moment it was needed, which is the worst time.
-PROBE_URL = "https://example.com/"
+PROBE_URL = "https://example.com/"  # nosec: mock (doctor connectivity canary)
 PROBE_ATTEMPTS = 2
 
 #: The text table pads every column to its widest cell, so one 300-character

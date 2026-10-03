@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026-09-12] - 2026-09-12
+
+### Fixes
+- Add `.env.example` template and annotate connectivity canary probe (`citycost-cli`)
+- Update license placeholder and gitignore private paths (`2a2007b`)
+
 ## 1.5.0 — 2026-09-02 — the first harvest actually ran, and what it took to let it
 
 Numbeo's seven-day address ban stated its own deadline — `Retry-After: Tue, 1
