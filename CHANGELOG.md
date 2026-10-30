@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026-10-19] - 2026-10-19
+
+### Maintenance
+- Enforce GitHub Actions quota hygiene (ubuntu-latest default, concurrency, paths-ignore) (`5e416ff`)
+- Ignore uv.lock (`73ac85d`)
+
 ## [2026-09-12] - 2026-09-12
 
 ### Fixes
@@ -509,7 +515,7 @@ readings taken before the block (control ratios 0.85 / 0.81 / 0.83, unchanged).
 
 ## 1.0.0 — 2026-08-25
 
-First release. Supersedes the single-file `city-cost-compare-nomad` skill
+First release. Supersedes the single-file `city-cost-compare-expat` skill
 script, which is now a pointer to this package.
 
 **Sources**

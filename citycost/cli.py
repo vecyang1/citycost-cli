@@ -57,7 +57,7 @@ def cmd_discover(args) -> int:
     if args.json:
         render.emit_json(res)
     else:
-        headers = ["#", "City", "Country", "Nomad $/mo", "Score"]
+        headers = ["#", "City", "Country", "Expat $/mo", "Score"]
         if args.verify:
             headers += ["Numbeo $/mo", "Numbeo slug"]
         rows = []

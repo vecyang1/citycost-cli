@@ -182,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("slug")
     ci.set_defaults(func=cli.cmd_city)
 
-    m = common(sub.add_parser("meetups", help="upcoming nomad meetups"))
+    m = common(sub.add_parser("meetups", help="upcoming city meetups"))
     m.add_argument("--city")
     m.add_argument("--country")
     m.add_argument("--days-ahead", type=int)

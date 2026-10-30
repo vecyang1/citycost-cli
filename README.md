@@ -121,7 +121,7 @@ fills a cache rather than producing a dataset, and the subject set is closed.
 ```bash
 citycost snapshots --index property     # which snapshots exist, from the page's own <select>
 citycost city prague-czech-republic     # nomads.com detail for one slug
-citycost meetups --country Vietnam      # upcoming nomad meetups
+citycost meetups --country Vietnam      # upcoming city meetups
 citycost cache                          # read-only report; --prune and --clear are named
 ```
 
