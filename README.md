@@ -314,3 +314,12 @@ The pipx copy on `PATH` is built from whatever the tree held when it was
 installed and does not follow the source. After a change here, `pipx reinstall
 citycost` (the spec is this directory) — or use `python -m citycost`, which
 runs the tree you are looking at.
+
+## Agentic Usage and Distributed Contribution
+
+> Agent接入后可自行推理, 也可以完善和提交回改进。
+
+AI coding agents can autonomously reason over this repository and are welcomed to submit improvements back upstream.
+
+- **Autonomous Reasoning**: Agents can inspect CLI flags, JSON schemas, and test contracts to reason and execute workflows without manual intervention.
+- **Distributed Contribution**: When your agent fixes an edge case, adds an adapter, or improves a workflow in real-world usage, ask your agent to run the test suite and submit a Pull Request via `gh pr create`.
